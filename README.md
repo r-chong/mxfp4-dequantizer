@@ -22,3 +22,10 @@ References:
 https://huggingface.co/docs/safetensors/v0.3.2/en/metadata_parsing
 https://yobibyte.github.io/safetensors.html
 https://huggingface.co/openai/gpt-oss-20b
+
+
+
+
+// TODO: do get_safetensors_content without an allocator
+// use a fixed-capacity representation for shapes
+// make LayerMetadata not depend on heap-allocated []u64 shapes (use fixed [MAX_DIMS]u64 + rank).
