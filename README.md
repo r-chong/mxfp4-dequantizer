@@ -1,6 +1,14 @@
 # MXFP4 Dequantizer in Zig
 
-Steps to run:
+A std.io.Reader that takes MXFP4 bytes from a safetensors file and outputs a stream of dequantized float bytes.
+When I'm done it should interface like:
+
+```zig
+var buf: [N]f32 = undefined;
+const n_read = try dequantizer.read(std.mem.asBytes(&buf));
+```
+
+# Steps to run:
 0. Create venv of choice
 1. Download gpt-oss for weights
 ```
