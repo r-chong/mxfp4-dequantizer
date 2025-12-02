@@ -67,9 +67,21 @@ pub const LayerMetadata = struct {
     }
 }  
 
-// layers_info
+// need these right now:
+// function get_safetensors_content - get header + raw tensor data (weights) 
+// read file
 
-// function get_safetensors_content - get header + raw tensor data (weights)
+// parse JSON UTF-8 string
+pub fn get_safetensors_content(file: []const u8, allocator: std.mem.Allocator) {
+    // read file
+
+    // get header_size_buf
+
+    // return layers_info (array of LayerMetadata)
+}
+
+
+// layers_info
 
 // function block_decoder - process individual block
 
@@ -81,6 +93,9 @@ pub const LayerMetadata = struct {
 pub fn main() void {
     var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
     defer file.close();
-    
+
+    // allocate array layers_info
+
+    // print each LayerMetadata to ensure it works
 }
 
