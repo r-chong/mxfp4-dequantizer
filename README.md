@@ -26,12 +26,14 @@ A **tensor** is an array. Ours contain model weights in FP4 format.
 
 A **layer** is a semantic grouping of tensors. It comes from neural network layers.
 
+**Microscaling FP4** (abbrev. MXFP4) is a custom 4-bit quantization format where every TWO FP4 values are packed into one byte, and the number of values depends entirely on the tensor’s shape. This is the quantization format assumed in this program.
+
 **Dequantization** is the reverse of quantization, where we go from low precision -> high precision.
 
 ### Quantization
 Quantization is a way to "compress" trained AI model weights into smaller file sizes, by representing the higher precision weights in a lower precision data type.
 
-Let's say our higher precision data type is FP16, and our lower precision data type is Microscaling FP4 (the one I used for this program).
+Let's say our higher precision data type is FP16, and our lower precision data type is MXFP4.
 Currently, in high-precision, the data is a weight matrix but it is stored linearly. So,
 
 ```
