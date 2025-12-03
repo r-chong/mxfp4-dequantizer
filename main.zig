@@ -54,17 +54,6 @@ pub const TensorMetadata = struct {
         self.allocator.free(self.dtype);
     }
 
-    // getters for locations in tensor data
-    pub fn get_tensor_start(self: Self) u64 {
-        return self.offset_start;
-    }
-
-    pub fn get_tensor_end(self: Self) u64 {
-        return self.offset_end;
-    }
-
-    // TODO: may need getter for number of elements
-
     pub fn print(self: TensorMetadata) void {
         std.debug.print("{s}\n dtype:{s}\n", .{ self.name, self.dtype });
 
