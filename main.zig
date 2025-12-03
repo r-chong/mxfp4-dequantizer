@@ -69,8 +69,16 @@ pub const TensorMetadata = struct {
     }
 };
 
-// TODO: ?? need a Layer struct with q,k,v,o,fc1,fc2
-// groupByLayer()
+// Layers represent a semantic view of a Transformer block / neural network layer in the model
+// pub const Layer = struct {
+//     q_weight: ?TensorMetadata, // query projection
+//     k_weight: ?TensorMetadata, // key projection
+//     v_weight: ?TensorMetadata, // value projection
+//     o_weight: ?TensorMetadata, // output projection
+//     // from MLP (feed forward) block in a Transformer
+//     mlp_fc1_weight: ?TensorMetadata,
+//     mlp_fc2_weight: ?TensorMetadata,
+// }
 
 pub const TensorsList = struct {
     allocator: std.mem.Allocator,
