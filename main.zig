@@ -1,12 +1,24 @@
 const std = @import("std");
 
-// 8 bytes is the size of a safetensors json header (u64)
-const HEADER_SIZE_BUF_SIZE = 8;
+// immutable global constants
+
+// how large our safetensors json header is - we got 8 bytes (u64) as per safetensors spec
+const HEADER_SIZE_BYTES = 8;
 const SAFETENSORS_PATH = "/Users/reese/code/cur_project/mxfp4-dequantizer/gpt-oss-20b/original/model.safetensors";
 
-// hardcode specific member accesses for gpt-oss
+// -----------------------------
+// hardcoded specifics for gpt-oss weight formats. If you are using non GPT-OSS models then you should use different values.
+// -----------------------------
+
+// layer member accesses
 const LAYER_I = "attn.qkv.weight";
 const LAYER_II = "attn.out.weight";
+
+const MXFP4_BLOCK_SIZE: usize = 32;
+const MXFP4_VALUES_PER_BYTE: usize = 32;
+const MXFP4_DATA_BYTES_PER_BLOCK: usize = MXFP4_BLOCK_SIZE;
+const MXFP4_SCALE_BYTES_PER_BLOCK: usize = 1; // E8M0 scaling
+const MXFP4_TOTAL_BYTES_PER_BLOCK: usize = MXFP4_DATA_BYTES_PER_BLOCK + MXFP4_SCALE_BYTES_PER_BLOCK; // 17
 
 // Tensors in a Safetensors file have metadata like a JSON key (name), shape, dtype (for us MXFP4), byte position
 // We create instances of this struct to describe each respective tensor.
@@ -80,9 +92,11 @@ pub const TensorMetadata = struct {
 //     mlp_fc2_weight: ?TensorMetadata,
 // }
 
-pub const TensorsList = struct {
+// TensorLists are NOT layers. There is only ONE TensorList per file.
+pub const TensorList = struct {
     allocator: std.mem.Allocator,
     tensors_metadata: std.ArrayList(TensorMetadata),
+    /// TensorList.header_size is the JSON header size for this file. These bytes + 8 is how much we skip to get to our first tensor.
     header_size: u64,
 
     const Self = @This();
@@ -95,7 +109,7 @@ pub const TensorsList = struct {
         };
     }
 
-    pub fn deinit(self: TensorsList) void {
+    pub fn deinit(self: TensorList) void {
         defer {
             for (self.tensors_metadata.items) |item| item.deinit();
             self.tensors_metadata.deinit();
@@ -108,16 +122,16 @@ pub const TensorsList = struct {
 // read file
 
 // parse JSON UTF-8 string, return tensors_list
-pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !TensorsList {
+pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !TensorList {
     var file = try std.fs.openFileAbsolute(filepath, .{});
     defer file.close();
 
     // we create a buffer to read our JSON bytes into
-    var header_size_buf: [HEADER_SIZE_BUF_SIZE]u8 = undefined;
+    var header_size_buf: [HEADER_SIZE_BYTES]u8 = undefined;
 
     const bytes_read = try file.read(&header_size_buf);
-    if (bytes_read != HEADER_SIZE_BUF_SIZE) {
-        std.debug.panic("Error - Expected bytes: {}. Actual bytes: {}", .{ HEADER_SIZE_BUF_SIZE, bytes_read });
+    if (bytes_read != HEADER_SIZE_BYTES) {
+        std.debug.panic("Error - Expected bytes: {}. Actual bytes: {}", .{ HEADER_SIZE_BYTES, bytes_read });
     }
 
     // take N as per safetensors spec
@@ -135,7 +149,7 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
     defer parsed.deinit();
     var iter = parsed.value.object.iterator();
 
-    var tensors_list = TensorsList.init(allocator, header_size_N);
+    var tensors_list = TensorList.init(allocator, header_size_N);
 
     // we iterate through all JSON entries
     while (iter.next()) |entry| {
@@ -184,18 +198,37 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
 }
 
 // debug: check we can access bytes of an individual tensor
-pub fn retrieve_tensor_raw_bytes(tensor: TensorMetadata, allocator: std.mem.Allocator) {
-    // we take in an individual block 
+// this will be repurposed to run for EVERY tensor
+// however I am hardcoding it for now, to run for one.
+pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_meta: TensorMetadata, allocator: std.mem.Allocator) void {
+    // our memory:
+    // | N | File Header | Tensor Data |
+    // so our memory calculation becomes
+    // HEADER_SIZE_BYTES + header_size
+    var file = std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
+    defer file.close();
+
+    const start_offset = HEADER_SIZE_BYTES + header_size;
+    const expected_tensor_size = tensor_meta.offset_end - tensor_meta.offset_start;
 
     // we're going to the start offset
+    try file.seekTo(tensor_meta.offset_start + start_offset);
+    const weight_buf = try allocator.alloc(u8, expected_tensor_size);
+    defer allocator.free(weight_buf);
 
-    // we're gonna call an allocator to read it. defer too
+    const bytes_read = try file.read(weight_buf);
+    if (bytes_read != expected_tensor_size) {
+        std.debug.panic("Error - Expected bytes: {}. Actual bytes: {}\n", .{ expected_tensor_size, bytes_read });
+    }
+
+    // iterate through all BLOCKS in a tensor.
+    const num_values = tensor_meta.scale[0] * tensor_meta.scale[1];
 
     // so first is the scaling factor
 
-    // then loop through 32 fp4 values. ensure that this does not leak
+    // then inside a block,loop through MXFP4_TOTAL_BYTES_PER_BLOCK bytes. ensure that this does not leak
 
-    // print as we go 
+    // print as we go
 }
 
 // function block_decoder - process individual block
