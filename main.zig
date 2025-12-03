@@ -10,7 +10,7 @@ const LAYER_II = "attn.out.weight";
 
 // Tensors in a Safetensors file have metadata like a JSON key (name), shape, dtype (for us MXFP4), byte position
 // We create instances of this struct to describe each respective tensor.
-pub const LayerMetadata = struct {
+pub const TensorMetadata = struct {
     allocator: std.mem.Allocator,
     name: []u8,
     shape: []u64,
@@ -53,7 +53,7 @@ pub const LayerMetadata = struct {
 
     // TODO: may need getter for number of elements
 
-    pub fn print(self: LayerMetadata) void {
+    pub fn print(self: TensorMetadata) void {
         std.debug.print("{s}\n dtype:{s}\n", .{ self.name, self.dtype });
 
         std.debug.print("    shape: ", .{});
@@ -69,9 +69,12 @@ pub const LayerMetadata = struct {
     }
 };
 
-pub const LayersInfo = struct {
+// TODO: ?? need a Layer struct with q,k,v,o,fc1,fc2
+// groupByLayer()
+
+pub const TensorsList = struct {
     allocator: std.mem.Allocator,
-    layers_metadata: std.ArrayList(LayerMetadata),
+    layers_metadata: std.ArrayList(TensorMetadata),
     header_size: u64,
 
     const Self = @This();
@@ -79,12 +82,12 @@ pub const LayersInfo = struct {
     pub fn init(allocator: std.mem.Allocator, header_size: u64) Self {
         return Self{
             .allocator = allocator,
-            .layers_metadata = std.ArrayList(LayerMetadata).init(allocator),
+            .layers_metadata = std.ArrayList(TensorMetadata).init(allocator),
             .header_size = header_size,
         };
     }
 
-    pub fn deinit(self: LayersInfo) void {
+    pub fn deinit(self: TensorsList) void {
         defer {
             for (self.layers_metadata.items) |item| item.deinit();
             self.layers_metadata.deinit();
@@ -92,17 +95,16 @@ pub const LayersInfo = struct {
     }
 };
 
-// need these right now:
+// TODO: need these right now:
 // function get_safetensors_content - get header + raw tensor data (weights)
 // read file
 
 // parse JSON UTF-8 string, return layers_info
-pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !LayersInfo {
-    // read file
+pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !TensorsList {
     var file = try std.fs.openFileAbsolute(filepath, .{});
     defer file.close();
 
-    // we create "header_size_buf", a buffer to read our JSON bytes into
+    // we create a buffer to read our JSON bytes into
     var header_size_buf: [HEADER_SIZE_BUF_SIZE]u8 = undefined;
 
     const bytes_read = try file.read(&header_size_buf);
@@ -118,14 +120,14 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
     const header_buf = try allocator.alloc(u8, header_size_N);
     defer allocator.free(header_buf);
 
-    // CHECK BYTES READ
+    // CHECK BYTES READ and only save if it succeeds
     _ = try file.read(header_buf);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, header_buf, .{});
     defer parsed.deinit();
     var iter = parsed.value.object.iterator();
 
-    var layers_info = LayersInfo.init(allocator, header_size_N);
+    var layers_info = TensorsList.init(allocator, header_size_N);
 
     // we iterate through all JSON entries
     while (iter.next()) |entry| {
@@ -134,11 +136,9 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
         const name = entry.key_ptr.*;
         const val = entry.value_ptr.*;
 
-        // get dtype
         const dtype = val.object.get("dtype").?.string;
 
-        // get shape as array
-        // we receive it as a raw untyped JSON array and can't work with it properly
+        // we receive it as a raw untyped JSON array and can't work with it properly in this form0
         const raw_shape = val.object.get("shape").?.array;
 
         // thus allocate with correct types
@@ -160,7 +160,7 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
         const offset_start: u64 = @intCast(raw_offsets.items[0].integer);
         const offset_end: u64 = @intCast(raw_offsets.items[1].integer);
 
-        const cur_layer = try LayerMetadata.init(
+        const cur_tensor = try TensorMetadata.init(
             allocator,
             name,
             shape,
@@ -169,13 +169,11 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
             offset_end,
         );
 
-        try layers_info.layers_metadata.append(cur_layer);
+        try layers_info.layers_metadata.append(cur_tensor);
     }
 
     return layers_info;
 }
-
-// layers_info
 
 // function block_decoder - process individual block
 
@@ -196,10 +194,10 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // ok lets process layers_info.
+    // ok now we want to get the weights not just the header info. so need to use the offset to access
     const layers_info = try get_safetensors_content(SAFETENSORS_PATH, allocator);
     defer layers_info.deinit();
 
-    // print each LayerMetadata to ensure it works
+    // print each TensorMetadata to ensure it works
     for (layers_info.layers_metadata.items) |layer_spec| layer_spec.print();
 }
