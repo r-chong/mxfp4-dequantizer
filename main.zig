@@ -183,6 +183,21 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
     return tensors_list;
 }
 
+// debug: check we can access bytes of an individual tensor
+pub fn retrieve_tensor_raw_bytes(tensor: TensorMetadata, allocator: std.mem.Allocator) {
+    // we take in an individual block 
+
+    // we're going to the start offset
+
+    // we're gonna call an allocator to read it. defer too
+
+    // so first is the scaling factor
+
+    // then loop through 32 fp4 values. ensure that this does not leak
+
+    // print as we go 
+}
+
 // function block_decoder - process individual block
 
 // function tensor_split - turn tensor into individual blocks
