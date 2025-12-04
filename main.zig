@@ -233,10 +233,10 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
 
     // in bytes
     const block_tensor_size = block_tensor_meta.offset_end - block_tensor_meta.offset_start;
-    const scale_tensor_size = scale_tensor_meta.offset_end - scale_tensor_meta.offset_start;
 
     // BLOCKS TENSOR
     const num_values = block_tensor_size * 2;
+    const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
 
     try file.seekTo(block_tensor_meta.offset_start + start_offset);
     const blocks_buf = try allocator.alloc(u8, block_tensor_size);
@@ -248,6 +248,7 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
     }
 
     // SCALES TENSOR
+    const scale_tensor_size = scale_tensor_meta.offset_end - scale_tensor_meta.offset_start;
     // from shape: rows x cols
     const num_scales = scale_tensor_meta.shape[0] * scale_tensor_meta.shape[1];
 
@@ -262,15 +263,69 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
 
     // COMBINING BLOCKS TENSOR, SCALES TENSOR
 
-    const block_size = num_values / num_scales;
-    const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
+    const values_per_scale: usize = num_values / num_scales;
+    std.debug.print(
+        "num_values={d}, num_scales={d}, values_per_scale={d}\n",
+        .{ num_values, num_scales, values_per_scale },
+    );
 
-    std.debug.print("block size: {d}, num_blocks: {d}\n", .{ block_size, num_blocks });
+    std.debug.print("num_values={d}, num_blocks={d}, num_scales={d}\n", .{ num_values, num_blocks, num_scales });
 
-    // for b ... num_scales
-    // in between each b, there are block_size values
-    // and every v / 2
-    // keep track of parity
+    // one block per scale
+    for (0..num_scales) |scale_idx| {
+        // const scale = scales_buf[scale_idx];
+
+        const block_start = scale_idx * values_per_scale;
+        const block_end = @min(block_start + values_per_scale, num_values);
+
+        var total_idx = block_start;
+        while (total_idx < block_end) : (total_idx += 1) {
+            const byte_idx = total_idx / 2;
+            const byte = blocks_buf[byte_idx];
+
+            const fp4_raw: u4 = if ((total_idx & 1) == 0)
+                @intCast(byte & 0x0f) // low nibble
+            else
+                @intCast((byte >> 4) & 0x0f); // high nibble
+
+            // only print a tiny sample so this doesn't explode
+            if (scale_idx == 0 and total_idx < block_start + 8) {
+                std.debug.print(
+                    "scale={d}, total_idx={d}, byte_idx={d}, fp4_raw={d}\n",
+                    .{ scale_idx, total_idx, byte_idx, fp4_raw },
+                );
+            }
+
+            // comment out for all 530M lines
+            // std.debug.print("total index: {d}, fp4 value: {d}\n", .{ total_idx, fp4_raw });
+        }
+    }
+
+    // std.debug.print("block size: {d}, num_blocks: {d}\n", .{ block_size, num_blocks });
+
+    // var block_idx: usize = 0;
+
+    // // loop through block
+    // while (block_idx < num_scales) : (block_idx += 1) {
+    //     // const scale = scales_buf[block_idx];
+
+    //     // nested loop for all values in block. value_idx resets every time whereas total idx keeps track of global values (not resetting every 32 values)
+    //     var value_idx: usize = 0;
+    //     while (value_idx < block_size) : (value_idx += 1) {
+    //         const total_idx = block_idx * block_size + value_idx;
+    //         // since 4 bits, divide by 2 since 2 4bits in 8 bytes
+    //         const byte_idx = total_idx / 2;
+    //         const byte = blocks_buf[byte_idx];
+
+    //         // use bit comparison to check if even (ends in 0) or odd (ends in 1)
+    //         const fp4_raw: u4 = if ((value_idx & 1) == 0)
+    //             @intCast(byte & 0x0f) // bit mask - take only lower nibble
+    //         else
+    //             @intCast((byte >> 4) & 0x0f); // bit mask - take only lower nibble
+
+    //         std.debug.print("total index: {d}, fp4 value: {d}\n", .{ total_idx, fp4_raw });
+    //     }
+    // }
 
     // assuming 2 FP4 values per byte (since 1 byte = 8 bits and we're talking about 4 bit numbers)
     // const fp4_bytes = (num_blocks - 1) / 2;
