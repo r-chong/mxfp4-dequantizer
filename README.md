@@ -8,8 +8,6 @@ var buf: [N]f32 = undefined;
 const n_read = try dequantizer.read(std.mem.asBytes(&buf));
 ```
 
-Please excuse a lack of formality in my comments and explanations of how things work. Also, feel free to open a PR if you have revisions
-
 # Steps to run:
 0. Create venv of choice
 1. Download gpt-oss for weights
@@ -63,7 +61,7 @@ Our model weights are stored in tensors alongside a format called Safetensors, w
 
 # What this program does
 
-In this program, we read the Safetensors JSON header, and then follow pointers to the location of the first tensor. 
+In this program, we read the Safetensors JSON header, and then follow pointers to the locations of the first tensor. The reason location is plural is because scale values and block values are stored in separate tensors in GPT-OSS weight
 
 There, we decode the lower precision values by multiplying the scaling factor by the FP4 data.
 
