@@ -13,12 +13,11 @@ const SAFETENSORS_PATH = "/Users/reese/code/cur_project/mxfp4-dequantizer/gpt-os
 // layer member accesses
 const LAYER_I = "attn.qkv.weight";
 const LAYER_II = "attn.out.weight";
+const TENSOR_PLACEHOLDER = "block.0.mlp.mlp1_weight";
 
+// GPT-OSS stores its scaling weights in separate tensors. if scaling values are stored WITH a block, then ensure this is kept in consideration.
 const MXFP4_BLOCK_SIZE: usize = 32;
-const MXFP4_VALUES_PER_BYTE: usize = 32;
-const MXFP4_DATA_BYTES_PER_BLOCK: usize = MXFP4_BLOCK_SIZE;
-const MXFP4_SCALE_BYTES_PER_BLOCK: usize = 1; // E8M0 scaling
-const MXFP4_TOTAL_BYTES_PER_BLOCK: usize = MXFP4_DATA_BYTES_PER_BLOCK + MXFP4_SCALE_BYTES_PER_BLOCK; // 17
+const MXFP4_VALUES_PER_BYTE: usize = 2;
 
 // Tensors in a Safetensors file have metadata like a JSON key (name), shape, dtype (for us MXFP4), byte position
 // We create instances of this struct to describe each respective tensor.
@@ -210,10 +209,15 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_meta: TensorMetadata, 
         std.debug.panic("Error - Expected bytes: {}. Actual bytes: {}\n", .{ expected_tensor_size, bytes_read });
     }
 
-    // iterate through all BLOCKS in a tensor.
+    // this is the product of the # rows and # cols, respectively.
     const num_values = tensor_meta.scale[0] * tensor_meta.scale[1];
+    const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
 
-    // so first is the scaling factor
+    // assuming 2 FP4 values per byte (since 1 byte = 8 bits and we're talking about 4 bit numbers)
+    const fp4_bytes = (num_blocks - 1) / 2;
+    // bytes of scales
+    // NOTE: scales are stored in a different tensor!!
+    const scale_bytes = num_blocks * MXFP4_BLOCK_SIZE;
 
     // then inside a block,loop through MXFP4_TOTAL_BYTES_PER_BLOCK bytes. ensure that this does not leak
 
