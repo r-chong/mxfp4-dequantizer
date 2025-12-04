@@ -206,7 +206,7 @@ fn getTensorByName(tensor_list: TensorList, target: []const u8) ?*const TensorMe
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
-pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !void {
+pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !void {
     const base = "block.22.mlp.mlp1_weight";
 
     // TEMPORARY:
@@ -297,43 +297,9 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
             }
 
             // comment out for all 530M lines
-            // std.debug.print("total index: {d}, fp4 value: {d}\n", .{ total_idx, fp4_raw });
+            // std.debug.print("tot/l index: {d}, fp4 value: {d}\n", .{ total_idx, fp4_raw });
         }
     }
-
-    // std.debug.print("block size: {d}, num_blocks: {d}\n", .{ block_size, num_blocks });
-
-    // var block_idx: usize = 0;
-
-    // // loop through block
-    // while (block_idx < num_scales) : (block_idx += 1) {
-    //     // const scale = scales_buf[block_idx];
-
-    //     // nested loop for all values in block. value_idx resets every time whereas total idx keeps track of global values (not resetting every 32 values)
-    //     var value_idx: usize = 0;
-    //     while (value_idx < block_size) : (value_idx += 1) {
-    //         const total_idx = block_idx * block_size + value_idx;
-    //         // since 4 bits, divide by 2 since 2 4bits in 8 bytes
-    //         const byte_idx = total_idx / 2;
-    //         const byte = blocks_buf[byte_idx];
-
-    //         // use bit comparison to check if even (ends in 0) or odd (ends in 1)
-    //         const fp4_raw: u4 = if ((value_idx & 1) == 0)
-    //             @intCast(byte & 0x0f) // bit mask - take only lower nibble
-    //         else
-    //             @intCast((byte >> 4) & 0x0f); // bit mask - take only lower nibble
-
-    //         std.debug.print("total index: {d}, fp4 value: {d}\n", .{ total_idx, fp4_raw });
-    //     }
-    // }
-
-    // assuming 2 FP4 values per byte (since 1 byte = 8 bits and we're talking about 4 bit numbers)
-    // const fp4_bytes = (num_blocks - 1) / 2;
-    // const scale_bytes = num_blocks * MXFP4_BLOCK_SIZE;
-
-    // then inside a block,loop through MXFP4_TOTAL_BYTES_PER_BLOCK bytes. ensure that this does not leak
-
-    // print as we go
 }
 
 // function block_decoder - process individual block
@@ -364,7 +330,7 @@ pub fn main() !void {
         layer_spec.print();
     }
 
-    const this_tensor_bytes = retrieve_tensor_raw_bytes(tensor_list.header_size, tensor_list, allocator);
+    const this_tensor_bytes = retrieve_quantized_values(tensor_list.header_size, tensor_list, allocator);
     std.debug.print("this tensor bytes: {any} ", .{this_tensor_bytes});
 
     // ok now we want to access one specific tensor and get its fp4 values
