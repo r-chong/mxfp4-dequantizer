@@ -191,24 +191,41 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
     return tensors_list;
 }
 
+// TEMPORARY: traverse TensorList for name == target
+fn getTensorByName(tensor_list: TensorList, target: []const u8) ?*const TensorMetadata {
+    for (tensor_list.tensors_metadata.items) |*tensor_metadata| {
+        std.debug.print("name: {s}\n", .{tensor_metadata.name});
+        if (std.mem.eql(u8, tensor_metadata.name, target)) {
+            return tensor_metadata;
+        }
+    } else {
+        return null;
+    }
+}
+
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
 pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !void {
-    const base = "block.0.mlp.mlp1_weight";
-
-    // should pass in existing reader
-    var file = std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
-    defer file.close();
+    const base = "block.22.mlp.mlp1_weight";
 
     // TEMPORARY:
     // this is our block_tensor_meta
-    const block_tensor_meta = base ++ ".blocks";
+    const block_name = base ++ ".blocks";
     // traverse TensorList for name == base.scales
     // this is our scale_tensor_meta
-    const scale_tensor_meta = base ++ ".scale";
+    const scale_name = base ++ ".scales";
 
-    // traverse TensorList for name == above
+    // TEMPORARY: traverse TensorList for name == target
+    const block_tensor_meta = getTensorByName(tensor_list, block_name) orelse {
+        std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{block_name});
+    };
+    const scale_tensor_meta = getTensorByName(tensor_list, scale_name) orelse {
+        std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{scale_name});
+    };
+
+    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
+    defer file.close();
 
     // our memory: | N | File Header | Tensor Data |
     // so our memory calculation becomes HEADER_SIZE_BYTES + header_size
@@ -220,16 +237,14 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
 
     // BLOCKS TENSOR
     const num_values = block_tensor_size * 2;
-    // from shape: rows x cols
-    const expected_values_size = block_tensor_meta.shape[0] * block_tensor_meta.shape[1];
 
     try file.seekTo(block_tensor_meta.offset_start + start_offset);
-    const blocks_buf = try allocator.alloc(u8, expected_values_size);
+    const blocks_buf = try allocator.alloc(u8, block_tensor_size);
     defer allocator.free(blocks_buf);
 
     const blocks_bytes_read = try file.read(blocks_buf);
-    if (blocks_bytes_read != expected_values_size) {
-        std.debug.panic("Error in Block Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ expected_values_size, blocks_bytes_read });
+    if (blocks_bytes_read != block_tensor_size) {
+        std.debug.panic("Error in Block Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ block_tensor_size, blocks_bytes_read });
     }
 
     // SCALES TENSOR
@@ -237,7 +252,7 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
     const num_scales = scale_tensor_meta.shape[0] * scale_tensor_meta.shape[1];
 
     try file.seekTo(scale_tensor_meta.offset_start + start_offset);
-    const scales_buf = try allocator.alloc(u8, expected_values_size);
+    const scales_buf = try allocator.alloc(u8, scale_tensor_size);
     defer allocator.free(scales_buf);
 
     const scales_bytes_read = try file.read(scales_buf);
@@ -249,6 +264,8 @@ pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allo
 
     const block_size = num_values / num_scales;
     const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
+
+    std.debug.print("block size: {d}, num_blocks: {d}\n", .{ block_size, num_blocks });
 
     // for b ... num_scales
     // in between each b, there are block_size values
@@ -284,11 +301,16 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // ok now we want to get the weights not just the header info. so need to use the offset to access
-    const tensors_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
-    defer tensors_list.deinit();
+    const tensor_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
+    defer tensor_list.deinit();
 
     // // print each TensorMetadata to ensure it works
-    for (tensors_list.tensors_metadata.items) |layer_spec| layer_spec.print();
+    for (tensor_list.tensors_metadata.items) |layer_spec| {
+        layer_spec.print();
+    }
+
+    const this_tensor_bytes = retrieve_tensor_raw_bytes(tensor_list.header_size, tensor_list, allocator);
+    std.debug.print("this tensor bytes: {any} ", .{this_tensor_bytes});
 
     // ok now we want to access one specific tensor and get its fp4 values
     // const retrieve_tensor_raw_bytes();
