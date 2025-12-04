@@ -23,9 +23,9 @@ const MXFP4_VALUES_PER_BYTE: usize = 2;
 // We create instances of this struct to describe each respective tensor.
 pub const TensorMetadata = struct {
     allocator: std.mem.Allocator,
-    name: []u8,
-    shape: []u64,
-    dtype: []u8,
+    name: []u8,     // e.g. "block.0.mlp.mlp1_weight.blocks"
+    shape: []u64,   // e.g. [4096, 4096] (rows, cols)
+    dtype: []u8,    // e.g. "FP4"
     offset_start: u64,
     offset_end: u64,
 
@@ -110,6 +110,7 @@ pub const TensorList = struct {
 // read file
 
 // parse JSON UTF-8 string, return tensors_list
+// TODO: turn this into a map. currently using a list approach as we're doing everything on the fly
 pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !TensorList {
     var file = try std.fs.openFileAbsolute(filepath, .{});
     defer file.close();
@@ -188,36 +189,67 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
-pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_meta: TensorMetadata, allocator: std.mem.Allocator) void {
-    // our memory:
-    // | N | File Header | Tensor Data |
-    // so our memory calculation becomes
-    // HEADER_SIZE_BYTES + header_size
+pub fn retrieve_tensor_raw_bytes(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) void {
+    const base = "block.0.mlp.mlp1_weight";
+    
+    // should pass in existing reader
     var file = std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
     defer file.close();
 
+    // TEMPORARY: 
+    // traverse TensorList for name == base.blocks
+    // this is our block_tensor_meta
+    // traverse TensorList for name == base.scales
+    // this is our scale_tensor_meta
+
+    // our memory: | N | File Header | Tensor Data |
+    // so our memory calculation becomes HEADER_SIZE_BYTES + header_size
     const start_offset = HEADER_SIZE_BYTES + header_size;
-    const expected_tensor_size = tensor_meta.offset_end - tensor_meta.offset_start;
 
-    // we're going to the start offset
-    try file.seekTo(tensor_meta.offset_start + start_offset);
-    const weight_buf = try allocator.alloc(u8, expected_tensor_size);
-    defer allocator.free(weight_buf);
+    // in bytes
+    const block_tensor_size = block_tensor_meta.offset_end_blocks - block_tensor_meta.offset_start_blocks;
+    const scale_tensor_size = scale_tensor_meta.offset_end_blocks - scale_tensor_meta.offset_start_scales;
 
-    const bytes_read = try file.read(weight_buf);
-    if (bytes_read != expected_tensor_size) {
-        std.debug.panic("Error - Expected bytes: {}. Actual bytes: {}\n", .{ expected_tensor_size, bytes_read });
+    // BLOCKS TENSOR
+    const num_values = block_tensor_size * 2;
+    // from shape: rows x cols
+    const expected_values_size = block_tensor_meta.shape[0] * block_tensor_meta.shape[1];
+
+    try file.seekTo(block_tensor_meta.offset_start + start_offset);
+    const blocks_buf = try allocator.alloc(u8, expected_values_size);
+    defer allocator.free(blocks_buf);
+
+    const blocks_bytes_read = try file.read(blocks_buf);
+    if (blocks_bytes_read != expected_values_size) {
+        std.debug.panic("Error in Block Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ expected_values_size, blocks_bytes_read });
     }
 
-    // this is the product of the # rows and # cols, respectively.
-    const num_values = tensor_meta.scale[0] * tensor_meta.scale[1];
+    // SCALES TENSOR
+    // from shape: rows x cols
+    const num_scales = scale_tensor_meta.shape[0] * scale_tensor_meta.shape[1];
+
+    try file.seekTo(scale_tensor_meta.offset_start + start_offset);
+    const scales_buf = try allocator.alloc(u8, expected_values_size);
+    defer allocator.free(scales_buf);
+
+    const scales_bytes_read = try file.read(scales_buf);
+    if (scales_bytes_read != scale_tensor_size) {
+        std.debug.panic("Error in Scales Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ scale_tensor_size, scales_bytes_read });
+    }
+
+    // COMBINING BLOCKS TENSOR, SCALES TENSOR
+
+    const block_size = num_values / num_scales;
     const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
 
+    // for b ... num_scales
+    // in between each b, there are block_size values
+    // and every v / 2
+    // keep track of parity
+
     // assuming 2 FP4 values per byte (since 1 byte = 8 bits and we're talking about 4 bit numbers)
-    const fp4_bytes = (num_blocks - 1) / 2;
-    // bytes of scales
-    // NOTE: scales are stored in a different tensor!!
-    const scale_bytes = num_blocks * MXFP4_BLOCK_SIZE;
+    // const fp4_bytes = (num_blocks - 1) / 2;
+    // const scale_bytes = num_blocks * MXFP4_BLOCK_SIZE;
 
     // then inside a block,loop through MXFP4_TOTAL_BYTES_PER_BLOCK bytes. ensure that this does not leak
 
@@ -244,9 +276,12 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // ok now we want to get the weights not just the header info. so need to use the offset to access
-    const tensors_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
-    defer tensors_list.deinit();
+    // const tensors_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
+    // defer tensors_list.deinit();
 
-    // print each TensorMetadata to ensure it works
-    for (tensors_list.tensors_metadata.items) |layer_spec| layer_spec.print();
+    // // print each TensorMetadata to ensure it works
+    // for (tensors_list.tensors_metadata.items) |layer_spec| layer_spec.print();
+
+    // ok now we want to access one specific tensor and get its fp4 values
+    const retrieve_tensor_raw_bytes();
 }
