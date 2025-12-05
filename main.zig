@@ -55,16 +55,12 @@ fn kind_to_str(kind: LayerKind) []const u8 {
     };
 }
 
-fn get_blocks_name_str(allocator: std.mem.Allocator, logical: Layer) ![]u8 {
-    const base = try kind_to_str(allocator, logical);
-    defer allocator.free(base);
-    return try std.fmt.allocPrint(allocator, "{s}.blocks", .{base});
+fn get_blocks_name_str(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}.blocks", .{base_name});
 }
 
-fn get_scales_name_str(allocator: std.mem.Allocator, logical: Layer) ![]u8 {
-    const base = try kind_to_str(allocator, logical);
-    defer allocator.free(base);
-    return try std.fmt.allocPrint(allocator, "{s}.scales", .{base});
+fn get_scales_name_str(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}.scales", .{base_name});
 }
 
 // base name is the JSON key
@@ -237,9 +233,9 @@ pub const QuantizedTensor = struct {
 
     // take decoded nibble and scale, turn scale into f32, and multiply by value to get dequantized nibble
     // TODO: replace with SIMD
-    pub fn dequantize(self: *const Self, idx: usize) f32 {
-        const val = self.decode(idx);
-        const scale_idx = self.scale_idx_for(idx);
+    pub fn dequantize_nibble(self: *const Self, nibble_idx: usize) f32 {
+        const val = self.decode(nibble_idx);
+        const scale_idx = self.scale_idx_for(nibble_idx);
 
         const scale = scale_byte_to_float(self.scales_buf, scale_idx);
         return val * scale;
@@ -418,9 +414,12 @@ pub fn print_block(buffers: LoadedBuffers) void {
 }
 
 // given JSON key, gets metadata for both blocks tensor and scales tensor
-pub fn get_block_and_scale_metadata(comptime base: []const u8, tensor_list: TensorList) !UnifiedMetadata {
-    const block_name = base ++ ".blocks";
-    const scale_name = base ++ ".scales";
+pub fn get_block_and_scale_metadata(allocator: std.mem.Allocator, base_name: []const u8, tensor_list: TensorList) !UnifiedMetadata {
+    const block_name = try get_blocks_name_str(allocator, base_name);
+    defer allocator.free(block_name);
+
+    const scale_name = try get_scales_name_str(allocator, base_name);
+    defer allocator.free(scale_name);
 
     // TEMPORARY: traverse TensorList for name == target
     const block_tensor_meta = get_tensor_by_name(tensor_list, block_name) orelse {
@@ -496,10 +495,8 @@ fn load_blocks_and_scales(
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
-pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !QuantizedTensor {
-    const base = "block.22.mlp.mlp1_weight";
-
-    const metadata = try get_block_and_scale_metadata(base, tensor_list);
+pub fn retrieve_quantized_values_for_tensor(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator, base_name: []const u8) !QuantizedTensor {
+    const metadata = try get_block_and_scale_metadata(allocator, base_name, tensor_list);
     const loaded = try load_blocks_and_scales(metadata, header_size, allocator);
 
     const quantized_tensor = try QuantizedTensor.init(
@@ -537,8 +534,14 @@ pub fn main() !void {
         layer_spec.print();
     }
 
-    var qt = try retrieve_quantized_values(tensor_list.header_size, tensor_list, allocator);
-    defer qt.deinit();
-    // ok now we want to access one specific tensor and get its fp4 values
+    const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+
+    const base_name = try make_base_name(allocator, layer);
+    defer allocator.free(base_name);
+
+    // run over an entire layer by changing the block_index (i.e., the 22 in block.22.mlp.mlp1_weight) *block_idx not to be confused with the index within a single block
+    var quantized_tensor = try retrieve_quantized_values_for_tensor(tensor_list.header_size, tensor_list, allocator, base_name);
+    defer quantized_tensor.deinit();
+
     // const retrieve_tensor_raw_bytes();
 }
