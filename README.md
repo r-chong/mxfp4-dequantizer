@@ -63,13 +63,16 @@ Our model weights are stored in tensors alongside a format called Safetensors, w
 
 In this program, we read the Safetensors JSON header, and then follow pointers to the locations of the first tensor. The reason location is plural is because scale values and block values are stored in separate tensors in GPT-OSS weight
 
-There, we decode the lower precision values by multiplying the scaling factor by the FP4 data.
+There, we decode the lower precision values and then dequantize by multiplying the scaling factor by the FP4 data. Dequantization happens on the fly.
 
 We repeat this process for all tensors.
 
 This process is accelerated using the Single Instruction, Multiple Data (SIMD) technique - which is basically using vectors to do operations at once instead of in sequences.
 
 This program outputs to a stream, the "decompressed" FP4 values in a higher precision form (haven't decided between F32 or BF16 yet).
+
+> “dequantization happens on the fly"
+We decode from top-down, keeping logical (global) index i and advance it. Indexing via logical index is NOT O(n) which was one of my initial confusions. We're using math to calculate our byte position and that's just adding up our variables.
 
 # References:
 - https://huggingface.co/docs/optimum/en/concept_guides/quantization
