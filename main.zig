@@ -69,6 +69,54 @@ pub const TensorMetadata = struct {
     }
 };
 
+pub const QuantizedTensor = struct {
+    // everything previously stored inside retrieve_quantized_values() is put into this struct
+    allocator: std.mem.Allocator,
+    shape: []u64,
+    blocks_buf: []u8,
+    scales_buf: []u8,
+    num_values: u64,
+    num_scales: u64,
+    values_per_scale: u64,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, shape: []const u64, blocks_buf: []const u8, scales_buf: []const u8, num_values: u64, num_scales: u64, values_per_scale: u64) !Self {
+        return Self{
+            .allocator = allocator,
+            // copy all arrays
+            .shape = try allocator.dupe(u64, shape),
+            .blocks_buf = try allocator.dupe(u8, blocks_buf),
+            .scales_buf = try allocator.dupe(u8, scales_buf),
+            // copy ints
+            .num_values = num_values,
+            .num_scales = num_scales,
+            .values_per_scale = values_per_scale,
+        };
+    }
+
+    pub fn deinit(self: Self) void {
+        // free arrays
+        self.allocator.free(self.shape);
+        self.allocator.free(self.blocks_buf);
+        self.allocator.free(self.scales_buf);
+    }
+
+    // TODO:
+
+    // Take a logical/global element index and return the raw FP4 nibble (0–15).
+    // pub fn decode_raw(idx) void;
+
+    // take nibble and turn FP4 ->
+    // pub fn decode(idx) void;
+
+    // Combine decode(idx) with the right scale derived from num_scales + values_per_scale, and output a real float (f32/f16).
+    // pub fn dequantize(idx) void;
+
+    // Returns something that can stream dequantized values
+    // pub fn reader();
+};
+
 // Layers represent a semantic view of a Transformer block / neural network layer in the model
 // pub const Layer = struct {
 //     q_weight: ?TensorMetadata, // query projection
@@ -106,6 +154,19 @@ pub const TensorList = struct {
             self.tensors_metadata.deinit();
         }
     }
+};
+
+const UnifiedMetadata = struct {
+    block: *const TensorMetadata,
+    scale: *const TensorMetadata,
+};
+
+const LoadedBuffers = struct {
+    blocks_buf: []u8,
+    scales_buf: []u8,
+    num_values: usize,
+    num_scales: usize,
+    values_per_scale: usize,
 };
 
 // TODO: need these right now:
@@ -203,91 +264,24 @@ fn getTensorByName(tensor_list: TensorList, target: []const u8) ?*const TensorMe
     }
 }
 
-// debug: check we can access bytes of an individual tensor
-// this will be repurposed to run for EVERY tensor
-// however I am hardcoding it for now, to run for one.
-pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !void {
-    const base = "block.22.mlp.mlp1_weight";
-
-    // TEMPORARY:
-    // this is our block_tensor_meta
-    const block_name = base ++ ".blocks";
-    // traverse TensorList for name == base.scales
-    // this is our scale_tensor_meta
-    const scale_name = base ++ ".scales";
-
-    // TEMPORARY: traverse TensorList for name == target
-    const block_tensor_meta = getTensorByName(tensor_list, block_name) orelse {
-        std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{block_name});
-    };
-    const scale_tensor_meta = getTensorByName(tensor_list, scale_name) orelse {
-        std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{scale_name});
-    };
-
-    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
-    defer file.close();
-
-    // our memory: | N | File Header | Tensor Data |
-    // so our memory calculation becomes HEADER_SIZE_BYTES + header_size
-    const start_offset = HEADER_SIZE_BYTES + header_size;
-
-    // in bytes
-    const block_tensor_size = block_tensor_meta.offset_end - block_tensor_meta.offset_start;
-
-    // BLOCKS TENSOR
-    const num_values = block_tensor_size * 2;
-    const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
-
-    try file.seekTo(block_tensor_meta.offset_start + start_offset);
-    const blocks_buf = try allocator.alloc(u8, block_tensor_size);
-    defer allocator.free(blocks_buf);
-
-    const blocks_bytes_read = try file.read(blocks_buf);
-    if (blocks_bytes_read != block_tensor_size) {
-        std.debug.panic("Error in Block Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ block_tensor_size, blocks_bytes_read });
-    }
-
-    // SCALES TENSOR
-    const scale_tensor_size = scale_tensor_meta.offset_end - scale_tensor_meta.offset_start;
-    // from shape: rows x cols
-    const num_scales = scale_tensor_meta.shape[0] * scale_tensor_meta.shape[1];
-
-    try file.seekTo(scale_tensor_meta.offset_start + start_offset);
-    const scales_buf = try allocator.alloc(u8, scale_tensor_size);
-    defer allocator.free(scales_buf);
-
-    const scales_bytes_read = try file.read(scales_buf);
-    if (scales_bytes_read != scale_tensor_size) {
-        std.debug.panic("Error in Scales Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ scale_tensor_size, scales_bytes_read });
-    }
-
-    // COMBINING BLOCKS TENSOR, SCALES TENSOR
-
-    const values_per_scale: usize = num_values / num_scales;
-    std.debug.print(
-        "num_values={d}, num_scales={d}, values_per_scale={d}\n",
-        .{ num_values, num_scales, values_per_scale },
-    );
-
-    std.debug.print("num_values={d}, num_blocks={d}, num_scales={d}\n", .{ num_values, num_blocks, num_scales });
-
-    // one block per scale
-    for (0..num_scales) |scale_idx| {
-        // const scale = scales_buf[scale_idx];
-
-        const block_start = scale_idx * values_per_scale;
-        const block_end = @min(block_start + values_per_scale, num_values);
+// walk fp4 values
+// one block per scale
+pub fn print_block(buffers: LoadedBuffers) void {
+    for (0..buffers.num_scales) |scale_idx| {
+        const block_start = scale_idx * buffers.values_per_scale;
+        const block_end = @min(block_start + buffers.values_per_scale, buffers.num_values);
 
         var total_idx = block_start;
         while (total_idx < block_end) : (total_idx += 1) {
             const byte_idx = total_idx / 2;
-            const byte = blocks_buf[byte_idx];
+            const byte = buffers.blocks_buf[byte_idx];
 
             const fp4_raw: u4 = if ((total_idx & 1) == 0)
                 @intCast(byte & 0x0f) // low nibble
             else
                 @intCast((byte >> 4) & 0x0f); // high nibble
 
+            // TODO: move to different function
             // only print a tiny sample so this doesn't explode
             if (scale_idx == 0 and total_idx < block_start + 8) {
                 std.debug.print(
@@ -300,6 +294,104 @@ pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allo
             // std.debug.print("tot/l index: {d}, fp4 value: {d}\n", .{ total_idx, fp4_raw });
         }
     }
+}
+
+// given JSON key, gets metadata for both blocks tensor and scales tensor
+pub fn getBlockAndScaleMetadata(comptime base: []const u8, tensor_list: TensorList) !UnifiedMetadata {
+    const block_name = base ++ ".blocks";
+    const scale_name = base ++ ".scales";
+
+    // TEMPORARY: traverse TensorList for name == target
+    const block_tensor_meta = getTensorByName(tensor_list, block_name) orelse {
+        std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{block_name});
+    };
+    const scale_tensor_meta = getTensorByName(tensor_list, scale_name) orelse {
+        std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{scale_name});
+    };
+
+    return UnifiedMetadata{
+        .block = block_tensor_meta,
+        .scale = scale_tensor_meta,
+    };
+}
+
+fn loadBlocksAndScales(
+    metadata: UnifiedMetadata,
+    header_size: u64,
+    allocator: std.mem.Allocator,
+) !LoadedBuffers {
+    // loadBlocksAndScales
+    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
+    defer file.close();
+
+    // our memory: | N | File Header | Tensor Data |
+    // so our memory calculation becomes HEADER_SIZE_BYTES + header_size
+    const start_offset = HEADER_SIZE_BYTES + header_size;
+
+    // BLOCKS TENSOR
+    const block_tensor_size_u64 = metadata.block.offset_end - metadata.block.offset_start;
+    const block_tensor_size: usize = @intCast(block_tensor_size_u64);
+    const num_values = block_tensor_size * 2;
+    // const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
+
+    // no defer (on success) as we pass to loaded_buffers
+    try file.seekTo(metadata.block.offset_start + start_offset);
+    const blocks_buf = try allocator.alloc(u8, block_tensor_size);
+    errdefer allocator.free(blocks_buf);
+
+    const blocks_bytes_read = try file.read(blocks_buf);
+    if (blocks_bytes_read != block_tensor_size) {
+        std.debug.panic("Error in Block Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ block_tensor_size, blocks_bytes_read });
+    }
+
+    // SCALES TENSOR
+    const scale_tensor_size_u64 = metadata.scale.offset_end - metadata.scale.offset_start;
+    const scale_tensor_size: usize = @intCast(scale_tensor_size_u64);
+    // from shape: rows x cols
+
+    try file.seekTo(metadata.scale.offset_start + start_offset);
+    const scales_buf = try allocator.alloc(u8, scale_tensor_size);
+    errdefer allocator.free(scales_buf);
+
+    const scales_bytes_read = try file.read(scales_buf);
+    if (scales_bytes_read != scale_tensor_size) {
+        std.debug.panic("Error in Scales Tensor - Expected bytes: {}. Actual bytes: {}\n", .{ scale_tensor_size, scales_bytes_read });
+    }
+
+    // COMBINING BLOCKS TENSOR, SCALES TENSOR
+
+    const num_scales = metadata.scale.shape[0] * metadata.scale.shape[1];
+    const values_per_scale: usize = num_values / num_scales;
+
+    return LoadedBuffers{
+        .blocks_buf = blocks_buf,
+        .scales_buf = scales_buf,
+        .num_values = num_values,
+        .num_scales = num_scales,
+        .values_per_scale = values_per_scale,
+    };
+}
+
+// debug: check we can access bytes of an individual tensor
+// this will be repurposed to run for EVERY tensor
+// however I am hardcoding it for now, to run for one.
+pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !QuantizedTensor {
+    const base = "block.22.mlp.mlp1_weight";
+
+    const metadata = try getBlockAndScaleMetadata(base, tensor_list);
+    const loaded = try loadBlocksAndScales(metadata, header_size, allocator);
+
+    const quantized_tensor = try QuantizedTensor.init(
+        allocator,
+        metadata.block.shape,
+        loaded.blocks_buf,
+        loaded.scales_buf,
+        loaded.num_values,
+        loaded.num_scales,
+        loaded.values_per_scale,
+    );
+
+    return quantized_tensor;
 }
 
 // function block_decoder - process individual block
