@@ -241,6 +241,32 @@ pub const QuantizedTensor = struct {
         return val * scale;
     }
 
+    pub fn dequantize_block(self: *const Self, scale_idx: usize, out: []f32) usize {
+        std.debug.assert(out.len == self.values_per_scale);
+        const block_start = scale_idx * self.values_per_scale;
+
+        var i: usize = 0;
+        while (i < self.values_per_scale) : (i += 1) {
+            out[i] = self.dequantize_nibble(block_start + i);
+        }
+    }
+
+    pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []f32) usize {
+        if (start_idx >= self.num_values) return 0;
+
+        var idx: usize = start_idx;
+        var written: usize = 0;
+
+        const max_idx = self.num_values;
+        const cap = out.len;
+
+        while (idx < max_idx and written < cap) : (idx += 1) {
+            out[written] = self.dequantize_nibble(idx);
+            written += 1;
+        }
+
+        return written;
+    }
     // stream dequantized values
     // pub fn reader(self);
 };
