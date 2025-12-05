@@ -101,13 +101,41 @@ pub const QuantizedTensor = struct {
     }
 
     // Take a logical/global element index and return the raw FP4 nibble (0–15).
-    // pub fn decode_raw(self, idx) void;
+    pub fn decode_raw(self: *const Self, idx: usize) u4 {
+        std.debug.assert(idx < self.num_values);
 
-    // // take nibble and turn FP4 ->
-    // pub fn decode(self, idx) void;
+        const byte_idx = idx / 2;
+        const byte = self.blocks_buf[byte_idx];
 
-    // // Combine decode(idx) with the right scale derived from num_scales + values_per_scale, and output a real float (f32/f16).
-    // pub fn dequantize(self, idx) void;
+        const nibble: u4 = if ((idx & 1) == 0)
+            @intCast(byte & 0x0f) // low nibble
+        else
+            @intCast((byte >> 4) & 0x0f); // high nibble
+
+        return nibble;
+    }
+
+    pub fn scale_for(self: *const Self, idx: usize) u8 {
+        const scale_idx = idx / self.values_per_scale;
+        std.debug.assert(scale_idx < self.num_scales);
+        return self.scales_buf[scale_idx];
+    }
+
+    // take nibble and turn FP4 ->
+    pub fn decode(self: *const Self, idx: usize) f32 {
+        const nibble = self.decode_raw(idx);
+        // TODO: implement your MXFP4 → f32 mapping here
+        // e.g. sign/exponent/mantissa logic
+        return fp4ToFloat(nibble);
+    }
+
+    pub fn dequantize(self: *const Self, idx: usize) f32 {
+        const val = self.decode(idx);
+        const scale = self.scale_for(idx);
+
+        const s = scaleByteToFloat(scale);
+        return val * s;
+    }
 
     // // Returns something that can stream dequantized values
     // pub fn reader(self);
@@ -261,7 +289,7 @@ pub fn print_block(buffers: LoadedBuffers) void {
             const byte_idx = total_idx / 2;
             const byte = buffers.blocks_buf[byte_idx];
 
-            const fp4_raw: u4 = if ((total_idx & 1) == 0)
+            const nibble: u4 = if ((total_idx & 1) == 0)
                 @intCast(byte & 0x0f) // low nibble
             else
                 @intCast((byte >> 4) & 0x0f); // high nibble
@@ -271,7 +299,7 @@ pub fn print_block(buffers: LoadedBuffers) void {
             if (scale_idx == 0 and total_idx < block_start + 8) {
                 std.debug.print(
                     "scale={d}, total_idx={d}, byte_idx={d}, fp4_raw={d}\n",
-                    .{ scale_idx, total_idx, byte_idx, fp4_raw },
+                    .{ scale_idx, total_idx, byte_idx, nibble },
                 );
             }
 
