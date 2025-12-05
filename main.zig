@@ -15,9 +15,47 @@ const LAYER_I = "attn.qkv.weight";
 const LAYER_II = "attn.out.weight";
 const TENSOR_PLACEHOLDER = "block.0.mlp.mlp1_weight";
 
+// -----------------------------
+// MXFP4 format
+// -----------------------------
+
 // GPT-OSS stores its scaling weights in separate tensors. if scaling values are stored WITH a block, then ensure this is kept in consideration.
 const MXFP4_BLOCK_SIZE: usize = 32;
 const MXFP4_VALUES_PER_BYTE: usize = 2;
+
+fn fp4ToFloat(n: u4) f32 {
+    // first bit is sign, second two bits are exponent, third bit is mantissa
+    const s: u1 = @intCast((n >> 3) & 0x1);
+    const e: u2 = @intCast((n >> 1) & 0x3);
+    const m: u1 = @intCast(n & 0x1);
+
+    if (e == 0) {
+        // Subnormal or zero
+        const sign = if (s == 1) -1.0 else 1.0;
+        const frac = @as(f32, m) * (0.5); // only 0.0 or 0.5
+        return sign * frac * (2.0 ** -1.0); // minimal exponent
+    }
+
+    const bias = 1;
+    const exponent = @as(f32, @floatFromInt(e)) - @as(f32, bias);
+    const sign = if (s == 1) -1.0 else 1.0;
+    const frac = 1.0 + (@as(f32, m) * 0.5);
+
+    return sign * frac * (2.0 ** exponent);
+}
+
+fn scaleByteToFloat(ptr: []const u8, idx: usize) f32 {
+    const off = idx * 2;
+    const bits: u16 =
+        (@as(u16, ptr[off + 0])) | (@as(u16, ptr[off + 1]) << 8);
+
+    const half = @as(f16, @bitCast(bits));
+    return @as(f32, half);
+}
+
+// -----------------------------
+// Safetensors
+// -----------------------------
 
 // Tensors in a Safetensors file have metadata like a JSON key (name), shape, dtype (for us MXFP4), byte position
 // We create instances of this struct to describe each respective tensor.
@@ -121,23 +159,23 @@ pub const QuantizedTensor = struct {
         return self.scales_buf[scale_idx];
     }
 
-    // // take nibble and turn FP4 ->
-    // pub fn decode(self: *const Self, idx: usize) f32 {
-    //     const nibble = self.decode_raw(idx);
-    //     // TODO: implement your MXFP4 → f32 mapping here
-    //     // e.g. sign/exponent/mantissa logic
-    //     return fp4ToFloat(nibble);
-    // }
+    // take nibble and turn FP4 ->
+    pub fn decode(self: *const Self, idx: usize) f32 {
+        const nibble = self.decode_raw(idx);
+        // TODO: implement your MXFP4 → f32 mapping here
+        // e.g. sign/exponent/mantissa logic
+        return fp4ToFloat(nibble);
+    }
 
-    // pub fn dequantize(self: *const Self, idx: usize) f32 {
-    //     const val = self.decode(idx);
-    //     const scale = self.scale_for(idx);
+    pub fn dequantize(self: *const Self, idx: usize) f32 {
+        const val = self.decode(idx);
+        const scale = self.scale_for(idx);
 
-    //     const s = scaleByteToFloat(scale);
-    //     return val * s;
-    // }
+        const s = scaleByteToFloat(scale);
+        return val * s;
+    }
 
-    // // Returns something that can stream dequantized values
+    // Returns something that can stream dequantized values
     // pub fn reader(self);
 };
 
