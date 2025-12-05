@@ -46,14 +46,14 @@ pub const TensorMetadata = struct {
         };
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
         // free arrays
         self.allocator.free(self.name);
         self.allocator.free(self.shape);
         self.allocator.free(self.dtype);
     }
 
-    pub fn print(self: TensorMetadata) void {
+    pub fn print(self: *const Self) void {
         std.debug.print("{s}\n dtype:{s}\n", .{ self.name, self.dtype });
 
         std.debug.print("    shape: ", .{});
@@ -81,52 +81,37 @@ pub const QuantizedTensor = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, shape: []const u64, blocks_buf: []const u8, scales_buf: []const u8, num_values: u64, num_scales: u64, values_per_scale: u64) !Self {
+    pub fn init(allocator: std.mem.Allocator, shape: []const u64, blocks_buf: []u8, scales_buf: []u8, num_values: u64, num_scales: u64, values_per_scale: u64) !Self {
         return Self{
             .allocator = allocator,
-            // copy all arrays
             .shape = try allocator.dupe(u64, shape),
-            .blocks_buf = try allocator.dupe(u8, blocks_buf),
-            .scales_buf = try allocator.dupe(u8, scales_buf),
-            // copy ints
+            .blocks_buf = blocks_buf,
+            .scales_buf = scales_buf,
             .num_values = num_values,
             .num_scales = num_scales,
             .values_per_scale = values_per_scale,
         };
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
         // free arrays
         self.allocator.free(self.shape);
         self.allocator.free(self.blocks_buf);
         self.allocator.free(self.scales_buf);
     }
 
-    // TODO:
-
     // Take a logical/global element index and return the raw FP4 nibble (0–15).
-    // pub fn decode_raw(idx) void;
+    // pub fn decode_raw(self, idx) void;
 
-    // take nibble and turn FP4 ->
-    // pub fn decode(idx) void;
+    // // take nibble and turn FP4 ->
+    // pub fn decode(self, idx) void;
 
-    // Combine decode(idx) with the right scale derived from num_scales + values_per_scale, and output a real float (f32/f16).
-    // pub fn dequantize(idx) void;
+    // // Combine decode(idx) with the right scale derived from num_scales + values_per_scale, and output a real float (f32/f16).
+    // pub fn dequantize(self, idx) void;
 
-    // Returns something that can stream dequantized values
-    // pub fn reader();
+    // // Returns something that can stream dequantized values
+    // pub fn reader(self);
 };
-
-// Layers represent a semantic view of a Transformer block / neural network layer in the model
-// pub const Layer = struct {
-//     q_weight: ?TensorMetadata, // query projection
-//     k_weight: ?TensorMetadata, // key projection
-//     v_weight: ?TensorMetadata, // value projection
-//     o_weight: ?TensorMetadata, // output projection
-//     // from MLP (feed forward) block in a Transformer
-//     mlp_fc1_weight: ?TensorMetadata,
-//     mlp_fc2_weight: ?TensorMetadata,
-// }
 
 // TensorLists are NOT layers. There is only ONE TensorList per file.
 pub const TensorList = struct {
@@ -145,10 +130,10 @@ pub const TensorList = struct {
         };
     }
 
-    pub fn deinit(self: TensorList) void {
+    pub fn deinit(self: *Self) void {
         defer {
             // for each TensorMetadata
-            for (self.tensors_metadata.items) |item| {
+            for (self.tensors_metadata.items) |*item| {
                 item.deinit();
             }
             self.tensors_metadata.deinit();
@@ -414,7 +399,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // ok now we want to get the weights not just the header info. so need to use the offset to access
-    const tensor_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
+    var tensor_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
     defer tensor_list.deinit();
 
     // // print each TensorMetadata to ensure it works
@@ -422,9 +407,8 @@ pub fn main() !void {
         layer_spec.print();
     }
 
-    const this_tensor_bytes = retrieve_quantized_values(tensor_list.header_size, tensor_list, allocator);
-    std.debug.print("this tensor bytes: {any} ", .{this_tensor_bytes});
-
+    var qt = try retrieve_quantized_values(tensor_list.header_size, tensor_list, allocator);
+    defer qt.deinit();
     // ok now we want to access one specific tensor and get its fp4 values
     // const retrieve_tensor_raw_bytes();
 }
