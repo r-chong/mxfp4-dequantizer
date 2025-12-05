@@ -121,21 +121,21 @@ pub const QuantizedTensor = struct {
         return self.scales_buf[scale_idx];
     }
 
-    // take nibble and turn FP4 ->
-    pub fn decode(self: *const Self, idx: usize) f32 {
-        const nibble = self.decode_raw(idx);
-        // TODO: implement your MXFP4 → f32 mapping here
-        // e.g. sign/exponent/mantissa logic
-        return fp4ToFloat(nibble);
-    }
+    // // take nibble and turn FP4 ->
+    // pub fn decode(self: *const Self, idx: usize) f32 {
+    //     const nibble = self.decode_raw(idx);
+    //     // TODO: implement your MXFP4 → f32 mapping here
+    //     // e.g. sign/exponent/mantissa logic
+    //     return fp4ToFloat(nibble);
+    // }
 
-    pub fn dequantize(self: *const Self, idx: usize) f32 {
-        const val = self.decode(idx);
-        const scale = self.scale_for(idx);
+    // pub fn dequantize(self: *const Self, idx: usize) f32 {
+    //     const val = self.decode(idx);
+    //     const scale = self.scale_for(idx);
 
-        const s = scaleByteToFloat(scale);
-        return val * s;
-    }
+    //     const s = scaleByteToFloat(scale);
+    //     return val * s;
+    // }
 
     // // Returns something that can stream dequantized values
     // pub fn reader(self);
