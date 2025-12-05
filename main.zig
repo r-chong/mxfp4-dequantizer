@@ -11,8 +11,67 @@ const SAFETENSORS_PATH = "/Users/reese/code/cur_project/mxfp4-dequantizer/gpt-os
 // -----------------------------
 
 // layer member accesses
-const LAYER_I = "attn.qkv.weight";
-const LAYER_II = "attn.out.weight";
+// Extracted from GPT-OSS files: model.safetensors and dtypes.json
+const LayerKind = enum {
+    AttnNormScale,
+    AttnQkvWeight,
+    AttnQkvBias,
+    AttnOutWeight,
+    AttnOutBias,
+    AttnSinks,
+
+    MlpNormScale,
+    MlpGateWeight,
+    MlpGateBias,
+
+    Mlp1WeightQuant, // base name for .blocks/.scales
+    Mlp1Bias,
+    Mlp2WeightQuant, // base name for .blocks/.scales
+    Mlp2Bias,
+};
+
+const Layer = struct {
+    block_idx: usize,
+    kind: LayerKind,
+};
+
+fn kind_to_str(kind: LayerKind) []const u8 {
+    return switch (kind) {
+        .AttnNormScale => "attn.norm.scale",
+        .AttnQkvWeight => "attn.qkv.weight",
+        .AttnQkvBias => "attn.qkv.bias",
+        .AttnOutWeight => "attn.out.weight",
+        .AttnOutBias => "attn.out.bias",
+        .AttnSinks => "attn.sinks",
+
+        .MlpNormScale => "mlp.norm.scale",
+        .MlpGateWeight => "mlp.gate.weight",
+        .MlpGateBias => "mlp.gate.bias",
+
+        .Mlp1WeightQuant => "mlp.mlp1_weight",
+        .Mlp1Bias => "mlp.mlp1_bias",
+        .Mlp2WeightQuant => "mlp.mlp2_weight",
+        .Mlp2Bias => "mlp.mlp2_bias",
+    };
+}
+
+fn get_blocks_name_str(allocator: std.mem.Allocator, logical: Layer) ![]u8 {
+    const base = try kind_to_str(allocator, logical);
+    defer allocator.free(base);
+    return try std.fmt.allocPrint(allocator, "{s}.blocks", .{base});
+}
+
+fn get_scales_name_str(allocator: std.mem.Allocator, logical: Layer) ![]u8 {
+    const base = try kind_to_str(allocator, logical);
+    defer allocator.free(base);
+    return try std.fmt.allocPrint(allocator, "{s}.scales", .{base});
+}
+
+// base name is the JSON key
+fn make_base_name(allocator: std.mem.Allocator, layer: Layer) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "block.{d}.{s}", .{ layer.block_idx, kind_to_str(layer.kind) });
+}
+
 const TENSOR_PLACEHOLDER = "block.0.mlp.mlp1_weight";
 
 // GPT-OSS stores its scaling weights in separate tensors. if scaling values are stored WITH a block, then ensure this is kept in consideration.
