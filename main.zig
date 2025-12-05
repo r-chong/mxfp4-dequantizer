@@ -23,7 +23,7 @@ const TENSOR_PLACEHOLDER = "block.0.mlp.mlp1_weight";
 const MXFP4_BLOCK_SIZE: usize = 32;
 const MXFP4_VALUES_PER_BYTE: usize = 2;
 
-fn fp4ToFloat(n: u4) f32 {
+fn fp4_to_float(n: u4) f32 {
     // first bit is sign, second two bits are exponent, third bit is mantissa
     const s: u1 = @intCast((n >> 3) & 0x1);
     const e: u2 = @intCast((n >> 1) & 0x3);
@@ -44,14 +44,22 @@ fn fp4ToFloat(n: u4) f32 {
     return sign * frac * (2.0 ** exponent);
 }
 
-fn scaleByteToFloat(ptr: []const u8, idx: usize) f32 {
-    const off = idx * 2;
+// assemble a 16 bit integer from two 8-bit chunks (bytes)
+// 16-bit not to be confused with bf16
+fn scale_byte_to_float(ptr: []const u8, idx: usize) f32 {
+    const byte_offset = idx * 2;
     const bits: u16 =
-        (@as(u16, ptr[off + 0])) | (@as(u16, ptr[off + 1]) << 8);
+        (@as(u16, ptr[byte_offset + 0])) | (@as(u16, ptr[byte_offset + 1]) << 8);
 
     const half = @as(f16, @bitCast(bits));
+
+    // convert to 32 bit float
     return @as(f32, half);
 }
+
+// function tensor_split - turn tensor into individual blocks
+
+// function select tensor layer - how are we choosing the layer
 
 // -----------------------------
 // Safetensors
@@ -109,13 +117,14 @@ pub const TensorMetadata = struct {
 
 pub const QuantizedTensor = struct {
     // everything previously stored inside retrieve_quantized_values() is put into this struct
+    // note: we keep all counts we use as indices in comparisons, as usize
     allocator: std.mem.Allocator,
     shape: []u64,
     blocks_buf: []u8,
     scales_buf: []u8,
-    num_values: u64,
-    num_scales: u64,
-    values_per_scale: u64,
+    num_values: usize,
+    num_scales: usize,
+    values_per_scale: usize,
 
     const Self = @This();
 
@@ -142,6 +151,7 @@ pub const QuantizedTensor = struct {
     pub fn decode_raw(self: *const Self, idx: usize) u4 {
         std.debug.assert(idx < self.num_values);
 
+        // integer division allows us to store a low nibble and high nibble per index
         const byte_idx = idx / 2;
         const byte = self.blocks_buf[byte_idx];
 
@@ -153,29 +163,30 @@ pub const QuantizedTensor = struct {
         return nibble;
     }
 
-    pub fn scale_for(self: *const Self, idx: usize) u8 {
+    // returns the scale index from the scale tensor
+    pub fn scale_idx_for(self: *const Self, idx: usize) u8 {
         const scale_idx = idx / self.values_per_scale;
         std.debug.assert(scale_idx < self.num_scales);
-        return self.scales_buf[scale_idx];
+        return scale_idx;
     }
 
-    // take nibble and turn FP4 ->
+    // decode an individual nibble
     pub fn decode(self: *const Self, idx: usize) f32 {
         const nibble = self.decode_raw(idx);
-        // TODO: implement your MXFP4 → f32 mapping here
-        // e.g. sign/exponent/mantissa logic
-        return fp4ToFloat(nibble);
+        return fp4_to_float(nibble);
     }
 
+    // take decoded nibble and scale, turn scale into f32, and multiply by value to get dequantized nibble
+    // TODO: replace with SIMD
     pub fn dequantize(self: *const Self, idx: usize) f32 {
         const val = self.decode(idx);
-        const scale = self.scale_for(idx);
+        const scale_idx = self.scale_idx_for(idx);
 
-        const s = scaleByteToFloat(scale);
-        return val * s;
+        const scale = scale_byte_to_float(self.scales_buf, scale_idx);
+        return val * scale;
     }
 
-    // Returns something that can stream dequantized values
+    // stream dequantized values
     // pub fn reader(self);
 };
 
@@ -444,12 +455,6 @@ pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allo
 
     return quantized_tensor;
 }
-
-// function block_decoder - process individual block
-
-// function tensor_split - turn tensor into individual blocks
-
-// function select tensor layer - how are we choosing the layer
 
 // main
 pub fn main() !void {
