@@ -374,7 +374,7 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
 }
 
 // TEMPORARY: traverse TensorList for name == target
-fn getTensorByName(tensor_list: TensorList, target: []const u8) ?*const TensorMetadata {
+fn get_tensor_by_name(tensor_list: TensorList, target: []const u8) ?*const TensorMetadata {
     for (tensor_list.tensors_metadata.items) |*tensor_metadata| {
         std.debug.print("name: {s}\n", .{tensor_metadata.name});
         if (std.mem.eql(u8, tensor_metadata.name, target)) {
@@ -418,15 +418,15 @@ pub fn print_block(buffers: LoadedBuffers) void {
 }
 
 // given JSON key, gets metadata for both blocks tensor and scales tensor
-pub fn getBlockAndScaleMetadata(comptime base: []const u8, tensor_list: TensorList) !UnifiedMetadata {
+pub fn get_block_and_scale_metadata(comptime base: []const u8, tensor_list: TensorList) !UnifiedMetadata {
     const block_name = base ++ ".blocks";
     const scale_name = base ++ ".scales";
 
     // TEMPORARY: traverse TensorList for name == target
-    const block_tensor_meta = getTensorByName(tensor_list, block_name) orelse {
+    const block_tensor_meta = get_tensor_by_name(tensor_list, block_name) orelse {
         std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{block_name});
     };
-    const scale_tensor_meta = getTensorByName(tensor_list, scale_name) orelse {
+    const scale_tensor_meta = get_tensor_by_name(tensor_list, scale_name) orelse {
         std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{scale_name});
     };
 
@@ -436,12 +436,12 @@ pub fn getBlockAndScaleMetadata(comptime base: []const u8, tensor_list: TensorLi
     };
 }
 
-fn loadBlocksAndScales(
+fn load_blocks_and_scales(
     metadata: UnifiedMetadata,
     header_size: u64,
     allocator: std.mem.Allocator,
 ) !LoadedBuffers {
-    // loadBlocksAndScales
+    // load_blocks_and_scales
     var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
     defer file.close();
 
@@ -499,8 +499,8 @@ fn loadBlocksAndScales(
 pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !QuantizedTensor {
     const base = "block.22.mlp.mlp1_weight";
 
-    const metadata = try getBlockAndScaleMetadata(base, tensor_list);
-    const loaded = try loadBlocksAndScales(metadata, header_size, allocator);
+    const metadata = try get_block_and_scale_metadata(base, tensor_list);
+    const loaded = try load_blocks_and_scales(metadata, header_size, allocator);
 
     const quantized_tensor = try QuantizedTensor.init(
         allocator,
