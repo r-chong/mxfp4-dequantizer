@@ -177,9 +177,9 @@ pub const QuantizedTensor = struct {
     shape: []u64,
     blocks_buf: []u8,
     scales_buf: []u8,
-    num_values: usize,
-    num_scales: usize,
-    values_per_scale: usize,
+    num_values: u64,
+    num_scales: u64,
+    values_per_scale: u64,
 
     const Self = @This();
 
@@ -189,9 +189,9 @@ pub const QuantizedTensor = struct {
             .shape = try allocator.dupe(u64, shape),
             .blocks_buf = blocks_buf,
             .scales_buf = scales_buf,
-            .num_values = num_values,
-            .num_scales = num_scales,
-            .values_per_scale = values_per_scale,
+            .num_values = @intCast(num_values),
+            .num_scales = @intCast(num_scales),
+            .values_per_scale = @intCast(values_per_scale),
         };
     }
 
@@ -219,7 +219,7 @@ pub const QuantizedTensor = struct {
     }
 
     // returns the scale index from the scale tensor
-    pub fn scale_idx_for(self: *const Self, idx: usize) u8 {
+    pub fn scale_idx_for(self: *const Self, idx: usize) usize {
         const scale_idx = idx / self.values_per_scale;
         std.debug.assert(scale_idx < self.num_scales);
         return scale_idx;
@@ -249,6 +249,7 @@ pub const QuantizedTensor = struct {
         while (i < self.values_per_scale) : (i += 1) {
             out[i] = self.dequantize_nibble(block_start + i);
         }
+        return i;
     }
 
     pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []f32) usize {
