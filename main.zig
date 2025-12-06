@@ -337,7 +337,7 @@ const LoadedBuffers = struct {
 
 // parse JSON UTF-8 string, return tensors_list
 // TODO: turn this into a map. currently using a list approach as we're doing everything on the fly
-pub fn get_safetensors_content(allocator: std.mem.Allocator, file: std.fs.File) !TensorList {
+pub fn get_safetensors_content(allocator: std.mem.Allocator, file: *std.fs.File) !TensorList {
     // we create a buffer to read our JSON bytes into
     var header_size_buf: [HEADER_SIZE_BYTES]u8 = undefined;
 
@@ -471,6 +471,7 @@ fn load_blocks_and_scales(
     allocator: std.mem.Allocator,
 ) !LoadedBuffers {
     // load_blocks_and_scales
+    // TODO: pass file pointer
     var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
     defer file.close();
 
@@ -570,21 +571,23 @@ pub fn main() !void {
 
     // DEMO ITEMS:
     // choose layer via for loop
-    const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+    // const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
 
     // parse header
-    var tensor_list = try get_safetensors_content(allocator, file);
+    var tensor_list = try get_safetensors_content(allocator, &file);
     defer tensor_list.deinit();
 
-    const sample_len: usize = 16;
-    var sample = try allocator.alloc(f32, sample_len);
-    defer allocator.free(sample);
+    // MODEL DRIVER HERE:
 
-    var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
-    defer quantized_tensor.deinit();
+    // const sample_len: usize = 16;
+    // var sample = try allocator.alloc(f32, sample_len);
+    // defer allocator.free(sample);
 
-    const written = quantized_tensor.dequantize_ostream(0, sample);
-    for (sample[0..written], 0..) |v, i| {
-        std.debug.print("  [{d}] = {d}\n", .{ i, v });
-    }
+    // var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
+    // defer quantized_tensor.deinit();
+
+    // const written = quantized_tensor.dequantize_ostream(0, sample);
+    // for (sample[0..written], 0..) |v, i| {
+    //     std.debug.print("  [{d}] = {d}\n", .{ i, v });
+    // }
 }
