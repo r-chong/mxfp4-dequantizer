@@ -64,7 +64,7 @@ fn get_scales_name_str(allocator: std.mem.Allocator, base_name: []const u8) ![]u
 }
 
 // base name is the JSON key
-fn make_base_name(allocator: std.mem.Allocator, layer: Layer) ![]u8 {
+fn make_base_name(allocator: std.mem.Allocator, layer: Layer) ![]const u8 {
     return try std.fmt.allocPrint(allocator, "block.{d}.{s}", .{ layer.block_idx, kind_to_str(layer.kind) });
 }
 
@@ -79,24 +79,31 @@ const MXFP4_BLOCK_SIZE: usize = 32;
 const MXFP4_VALUES_PER_BYTE: usize = 2;
 
 fn fp4_to_float(n: u4) f32 {
-    // first bit is sign, second two bits are exponent, third bit is mantissa
+    // first bit is sign, next two bits exponent, last bit mantissa
+    // bit layout: [s e e m]
     const s: u1 = @intCast((n >> 3) & 0x1);
     const e: u2 = @intCast((n >> 1) & 0x3);
     const m: u1 = @intCast(n & 0x1);
 
+    const sign: f32 = if (s == 1) -1.0 else 1.0;
+
     if (e == 0) {
-        // Subnormal or zero
-        const sign = if (s == 1) -1.0 else 1.0;
-        const frac = @as(f32, m) * (0.5); // only 0.0 or 0.5
-        return sign * frac * (2.0 ** -1.0); // minimal exponent
+        // subnormal: exponent = -1, frac = 0.0 or 0.5
+        const frac: f32 = if (m == 0) 0.0 else 0.5;
+        const scale: f32 = 0.5; // 2^-1
+        return sign * frac * scale;
     }
 
-    const bias = 1;
-    const exponent = @as(f32, @floatFromInt(e)) - @as(f32, bias);
-    const sign = if (s == 1) -1.0 else 1.0;
-    const frac = 1.0 + (@as(f32, m) * 0.5);
+    // normalized: exponent_i = e - 1 ∈ {0,1,2}
+    const frac: f32 = if (m == 0) 1.0 else 1.5;
+    const scale: f32 = switch (e) {
+        1 => 1.0, // 2^0
+        2 => 2.0, // 2^1
+        3 => 4.0, // 2^2
+        else => 1.0, // shouldn't happen
+    };
 
-    return sign * frac * (2.0 ** exponent);
+    return sign * frac * scale;
 }
 
 // assemble a 16 bit integer from two 8-bit chunks (bytes)
@@ -319,7 +326,7 @@ const LoadedBuffers = struct {
 
 // parse JSON UTF-8 string, return tensors_list
 // TODO: turn this into a map. currently using a list approach as we're doing everything on the fly
-pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !TensorList {
+pub fn get_safetensors_content(allocator: std.mem.Allocator, filepath: []const u8) !TensorList {
     var file = try std.fs.openFileAbsolute(filepath, .{});
     defer file.close();
 
@@ -522,7 +529,7 @@ fn load_blocks_and_scales(
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
-pub fn retrieve_quantized_values_for_tensor(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator, base_name: []const u8) !QuantizedTensor {
+pub fn retrieve_quantized_values_for_tensor(allocator: std.mem.Allocator, header_size: u64, tensor_list: TensorList, base_name: []const u8) !QuantizedTensor {
     const metadata = try get_block_and_scale_metadata(allocator, base_name, tensor_list);
     const loaded = try load_blocks_and_scales(metadata, header_size, allocator);
 
@@ -539,11 +546,25 @@ pub fn retrieve_quantized_values_for_tensor(header_size: u64, tensor_list: Tenso
     return quantized_tensor;
 }
 
+// master function - loads a QuantizedTensor object on which you can call .dequantize_ostream()
+pub fn load_quantized_tensor(allocator: std.mem.Allocator, safetensors_path: []const u8, layer: Layer) !QuantizedTensor {
+    // parse header
+    var tensor_list = try get_safetensors_content(allocator, safetensors_path);
+    defer tensor_list.deinit();
+
+    // build JSON key
+    const base_name = try make_base_name(allocator, layer);
+    defer allocator.free(base_name);
+
+    // get QuantizedTensor
+    const quantized_tensor = try retrieve_quantized_values_for_tensor(allocator, tensor_list.header_size, tensor_list, base_name);
+    // do NOT deinit quantized_tensor - caller should free
+
+    return quantized_tensor;
+}
+
 // main
 pub fn main() !void {
-    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
-    defer file.close();
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer switch (gpa.deinit()) {
         .leak => std.debug.panic("Leaked", .{}),
@@ -552,23 +573,19 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // ok now we want to get the weights not just the header info. so need to use the offset to access
-    var tensor_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
-    defer tensor_list.deinit();
-
-    // // print each TensorMetadata to ensure it works
-    for (tensor_list.tensors_metadata.items) |layer_spec| {
-        layer_spec.print();
-    }
-
+    // DEMO ITEMS:
+    // choose layer via for loop
     const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
 
-    const base_name = try make_base_name(allocator, layer);
-    defer allocator.free(base_name);
+    const sample_len: usize = 16;
+    var sample = try allocator.alloc(f32, sample_len);
+    defer allocator.free(sample);
 
-    // run over an entire layer by changing the block_index (i.e., the 22 in block.22.mlp.mlp1_weight) *block_idx not to be confused with the index within a single block
-    var quantized_tensor = try retrieve_quantized_values_for_tensor(tensor_list.header_size, tensor_list, allocator, base_name);
+    var quantized_tensor = try load_quantized_tensor(allocator, SAFETENSORS_PATH, layer);
     defer quantized_tensor.deinit();
 
-    // const retrieve_tensor_raw_bytes();
+    const written = quantized_tensor.dequantize_ostream(0, sample);
+    for (sample[0..written], 0..) |v, i| {
+        std.debug.print("  [{d}] = {d}\n", .{ i, v });
+    }
 }
