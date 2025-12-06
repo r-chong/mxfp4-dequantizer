@@ -106,8 +106,8 @@ fn fp4_to_float(n: u4) f32 {
     return sign * frac * scale;
 }
 
-// assemble a 16 bit integer from two 8-bit chunks (bytes)
-// 16-bit not to be confused with bf16
+// assemble a 16 bit integer from two 8-bit chunks (bytes) - 16-bit not to be confused with bf16
+// note: This does NOT mean "scale a byte to a float". It means: return the byte-format representation of our scale (i.e., the scale's bytes).
 fn scale_byte_to_float(ptr: []const u8, idx: usize) f32 {
     const raw: u8 = ptr[idx];
 
@@ -275,7 +275,7 @@ pub const QuantizedTensor = struct {
         return written;
     }
     // stream dequantized values
-    // pub fn reader(self);
+    // pub fn read(self);
 };
 
 // TensorLists are NOT layers. There is only ONE TensorList per file.
@@ -325,10 +325,7 @@ const LoadedBuffers = struct {
 
 // parse JSON UTF-8 string, return tensors_list
 // TODO: turn this into a map. currently using a list approach as we're doing everything on the fly
-pub fn get_safetensors_content(allocator: std.mem.Allocator, filepath: []const u8) !TensorList {
-    var file = try std.fs.openFileAbsolute(filepath, .{});
-    defer file.close();
-
+pub fn get_safetensors_content(allocator: std.mem.Allocator, file: std.fs.File) !TensorList {
     // we create a buffer to read our JSON bytes into
     var header_size_buf: [HEADER_SIZE_BYTES]u8 = undefined;
 
@@ -546,11 +543,7 @@ pub fn retrieve_quantized_values_for_tensor(allocator: std.mem.Allocator, header
 }
 
 // master function - loads a QuantizedTensor object on which you can call .dequantize_ostream()
-pub fn load_quantized_tensor(allocator: std.mem.Allocator, safetensors_path: []const u8, layer: Layer) !QuantizedTensor {
-    // parse header
-    var tensor_list = try get_safetensors_content(allocator, safetensors_path);
-    defer tensor_list.deinit();
-
+pub fn load_quantized_tensor(allocator: std.mem.Allocator, layer: Layer, tensor_list: TensorList) !QuantizedTensor {
     // build JSON key
     const base_name = try make_base_name(allocator, layer);
     defer allocator.free(base_name);
@@ -572,15 +565,22 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
+    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
+    defer file.close();
+
     // DEMO ITEMS:
     // choose layer via for loop
     const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+
+    // parse header
+    var tensor_list = try get_safetensors_content(allocator, file);
+    defer tensor_list.deinit();
 
     const sample_len: usize = 16;
     var sample = try allocator.alloc(f32, sample_len);
     defer allocator.free(sample);
 
-    var quantized_tensor = try load_quantized_tensor(allocator, SAFETENSORS_PATH, layer);
+    var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
     defer quantized_tensor.deinit();
 
     const written = quantized_tensor.dequantize_ostream(0, sample);
