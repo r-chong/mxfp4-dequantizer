@@ -308,13 +308,34 @@ pub const TensorList = struct {
     // traverse TensorList for name == target
     fn get_tensor_by_name(self: *const Self, target: []const u8) ?*const TensorMetadata {
         for (self.tensors_metadata.items) |*tensor_metadata| {
-            std.debug.print("name: {s}\n", .{tensor_metadata.name});
             if (std.mem.eql(u8, tensor_metadata.name, target)) {
                 return tensor_metadata;
             }
         } else {
             return null;
         }
+    }
+
+    fn get_num_blocks(self: *const Self) usize {
+        var max_num_blocks: u64 = 0;
+        for (self.tensors_metadata.items) |tensor_metadata| {
+            const name = tensor_metadata.name;
+
+            if (!std.mem.startsWith(u8, name, "block.")) continue;
+
+            if (std.mem.indexOfScalarPos(u8, name, 6, '.')) |pos| {
+                const idx_slice = name[6..pos];
+
+                const block_idx = std.fmt.parseInt(usize, idx_slice, 10) catch continue;
+
+                // Track highest seen block index
+                if (block_idx + 1 > max_num_blocks) {
+                    max_num_blocks = block_idx + 1;
+                }
+            }
+        }
+
+        return max_num_blocks;
     }
 };
 
@@ -483,7 +504,6 @@ fn load_blocks_and_scales(
     const block_tensor_size_u64 = metadata.block.offset_end - metadata.block.offset_start;
     const block_tensor_size: usize = @intCast(block_tensor_size_u64);
     const num_values = block_tensor_size * 2;
-    // const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
 
     // no defer (on success) as we pass to loaded_buffers
     try file.seekTo(metadata.block.offset_start + start_offset);
@@ -556,6 +576,39 @@ pub fn load_quantized_tensor(allocator: std.mem.Allocator, layer: Layer, tensor_
     return quantized_tensor;
 }
 
+// these are the only weights that are quantized
+const QUANT_LAYER_KINDS = [_]LayerKind{
+    .Mlp1WeightQuant,
+    .Mlp2WeightQuant,
+};
+
+fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
+    const sample_len: usize = 16;
+    var sample = try allocator.alloc(f32, sample_len);
+    defer allocator.free(sample);
+
+    // iterate over blocks
+    for (0..tensor_list.get_num_blocks()) |block_idx| {
+        for (QUANT_LAYER_KINDS) |kind| {
+            const layer: Layer = .{ .block_idx = block_idx, .kind = kind };
+
+            std.debug.print("=== block.{d}.{s} ===\n", .{ block_idx, kind_to_str(kind) });
+
+            var quantized_tensor = load_quantized_tensor(allocator, layer, tensor_list) catch |err| {
+                // If a particular layer/kind combo doesn't exist, just skip it.
+                std.debug.print("  skipping (could not load): {any}\n", .{err});
+                continue;
+            };
+            defer quantized_tensor.deinit();
+
+            const written = quantized_tensor.dequantize_ostream(0, sample);
+            for (sample[0..written], 0..) |v, i| {
+                std.debug.print("  [{d}] = {d}\n", .{ i, v });
+            }
+        }
+    }
+}
+
 // main
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -577,17 +630,6 @@ pub fn main() !void {
     var tensor_list = try get_safetensors_content(allocator, &file);
     defer tensor_list.deinit();
 
-    // MODEL DRIVER HERE:
-
-    // const sample_len: usize = 16;
-    // var sample = try allocator.alloc(f32, sample_len);
-    // defer allocator.free(sample);
-
-    // var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
-    // defer quantized_tensor.deinit();
-
-    // const written = quantized_tensor.dequantize_ostream(0, sample);
-    // for (sample[0..written], 0..) |v, i| {
-    //     std.debug.print("  [{d}] = {d}\n", .{ i, v });
-    // }
+    // MODEL DRIVER:
+    try model_driver(allocator, tensor_list);
 }
