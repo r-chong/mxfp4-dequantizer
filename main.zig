@@ -304,6 +304,18 @@ pub const TensorList = struct {
             self.tensors_metadata.deinit();
         }
     }
+
+    // traverse TensorList for name == target
+    fn get_tensor_by_name(self: *const Self, target: []const u8) ?*const TensorMetadata {
+        for (self.tensors_metadata.items) |*tensor_metadata| {
+            std.debug.print("name: {s}\n", .{tensor_metadata.name});
+            if (std.mem.eql(u8, tensor_metadata.name, target)) {
+                return tensor_metadata;
+            }
+        } else {
+            return null;
+        }
+    }
 };
 
 const UnifiedMetadata = struct {
@@ -399,18 +411,6 @@ pub fn get_safetensors_content(allocator: std.mem.Allocator, file: std.fs.File) 
     return tensors_list;
 }
 
-// TEMPORARY: traverse TensorList for name == target
-fn get_tensor_by_name(tensor_list: TensorList, target: []const u8) ?*const TensorMetadata {
-    for (tensor_list.tensors_metadata.items) |*tensor_metadata| {
-        std.debug.print("name: {s}\n", .{tensor_metadata.name});
-        if (std.mem.eql(u8, tensor_metadata.name, target)) {
-            return tensor_metadata;
-        }
-    } else {
-        return null;
-    }
-}
-
 // walk fp4 values
 // one block per scale
 pub fn print_block(buffers: LoadedBuffers) void {
@@ -452,10 +452,10 @@ pub fn get_block_and_scale_metadata(allocator: std.mem.Allocator, base_name: []c
     defer allocator.free(scale_name);
 
     // TEMPORARY: traverse TensorList for name == target
-    const block_tensor_meta = get_tensor_by_name(tensor_list, block_name) orelse {
+    const block_tensor_meta = tensor_list.get_tensor_by_name(block_name) orelse {
         std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{block_name});
     };
-    const scale_tensor_meta = get_tensor_by_name(tensor_list, scale_name) orelse {
+    const scale_tensor_meta = tensor_list.get_tensor_by_name(scale_name) orelse {
         std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{scale_name});
     };
 
