@@ -109,14 +109,13 @@ fn fp4_to_float(n: u4) f32 {
 // assemble a 16 bit integer from two 8-bit chunks (bytes)
 // 16-bit not to be confused with bf16
 fn scale_byte_to_float(ptr: []const u8, idx: usize) f32 {
-    const byte_offset = idx * 2;
-    const bits: u16 =
-        (@as(u16, ptr[byte_offset + 0])) | (@as(u16, ptr[byte_offset + 1]) << 8);
+    const raw: u8 = ptr[idx];
 
-    const half = @as(f16, @bitCast(bits));
+    // Build a float32 from E8M0 exponents
+    const bits: u32 = @as(u32, raw) << 23;
+    const scale: f32 = @bitCast(bits);
 
-    // convert to 32 bit float
-    return @as(f32, half);
+    return scale;
 }
 
 // function tensor_split - turn tensor into individual blocks
