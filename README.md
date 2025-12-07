@@ -4,8 +4,11 @@ A std.io.Reader that takes MXFP4 bytes from a safetensors file and outputs a str
 When I'm done it should interface like:
 
 ```zig
-var buf: [N]f32 = undefined;
-const n_read = try dequantizer.read(std.mem.asBytes(&buf));
+var reader = TensorReader.init(&quantized_tensor);
+defer reader.deinit();
+
+var sample: [16]f32 = undefined;
+const written = reader.read(std.mem.asBytes(&sample));
 ```
 
 # Steps to run:
