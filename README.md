@@ -9,6 +9,7 @@ const n_read = try dequantizer.read(std.mem.asBytes(&buf));
 ```
 
 # Steps to run:
+0. Install Zig v0.15+
 0. Create venv of choice
 1. Download gpt-oss for weights
 ```
@@ -16,7 +17,7 @@ hf download openai/gpt-oss-20b --include "original/*" --local-dir gpt-oss-20b/
 pip install gpt-oss
 python -m gpt_oss.chat model/
 ```
-2. Interface the dequantizer (WIP)
+2. Interface the dequantizer like above
 
 # Key Terminology
 
@@ -78,7 +79,7 @@ This program outputs to a stream, the "decompressed" FP4 values in a higher prec
 - https://huggingface.co/openai/gpt-oss-20b
 - https://huggingface.co/blog/RakshitAralimatti/learn-ai-with-me
 - https://ziglang.org/documentation/0.10.1/std/src/io/reader.zig.html
-- 
+- https://ziglang.org/documentation/0.15.1/
 
 The above (codebase included) was written without AI.
 

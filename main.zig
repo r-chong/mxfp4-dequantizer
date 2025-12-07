@@ -188,9 +188,9 @@ pub const QuantizedTensor = struct {
     shape: []u64,
     blocks_buf: []u8,
     scales_buf: []u8,
-    num_values: u64,
-    num_scales: u64,
-    values_per_scale: u64,
+    num_values: usize,
+    num_scales: usize,
+    values_per_scale: usize,
 
     const Self = @This();
 
@@ -263,7 +263,7 @@ pub const QuantizedTensor = struct {
         return i;
     }
 
-    pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []f32) usize {
+    pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []align(1) f32) usize {
         if (start_idx >= self.num_values) return 0;
 
         var idx: usize = start_idx;
@@ -283,6 +283,10 @@ pub const QuantizedTensor = struct {
     // pub fn read(self);
 };
 
+// TODO:
+// Define wrapper struct that holds a std.Io.Reader directly.
+// Set up a VTable with a stream function that pulls bytes out of Self using readFn
+// use adapter in meantime........
 const TensorReader = struct {
     quantized_tensor: *QuantizedTensor,
     cursor: usize,
@@ -302,12 +306,51 @@ const TensorReader = struct {
     }
 
     // read <=out.len values into out, returning # vals written'
-    pub fn read(self: *Self, out: []f32) usize {
+    pub fn readFloats(self: *Self, out: []align(1) f32) usize {
         if (out.len == 0) return 0;
 
         const written = self.quantized_tensor.dequantize_ostream(self.cursor, out);
         self.cursor += written;
         return written;
+    }
+
+    /// Private; Returns the number of bytes read. It may be less than buffer.len.
+    /// If the number of bytes read is 0, it means end of stream.
+    /// End of stream is not an error condition.
+    fn readFn(context: *Self, buffer: []u8) !usize {
+        const float_size = @sizeOf(f32);
+
+        // dequantize
+        // write to buffer
+
+        const quantized_tensor = context.quantized_tensor;
+        const max_values: usize = quantized_tensor.num_values;
+        var out_byte_index: usize = 0;
+
+        // take next fp4 index
+        while (out_byte_index + float_size <= buffer.len and context.cursor < max_values) : (context.cursor += 1) {
+            const val = quantized_tensor.dequantize_nibble(context.cursor);
+            const bits: u32 = @bitCast(val);
+
+            const buf_slice = buffer[out_byte_index .. out_byte_index + float_size];
+
+            // little endian
+            std.mem.writeInt(
+                u32,
+                @as(*[float_size]u8, @ptrCast(buf_slice.ptr)),
+                bits,
+                .little,
+            );
+            out_byte_index += float_size;
+        }
+        return out_byte_index;
+    }
+
+    // this is a type
+    const LegacyReader = std.io.GenericReader(*Self, error{}, readFn);
+
+    pub fn reader(self: *Self) LegacyReader {
+        return .{ .context = self };
     }
 
     pub fn reset(self: *Self) void {
@@ -327,7 +370,7 @@ pub const TensorList = struct {
     pub fn init(allocator: std.mem.Allocator, header_size: u64) Self {
         return Self{
             .allocator = allocator,
-            .tensors_metadata = std.ArrayList(TensorMetadata).init(allocator),
+            .tensors_metadata = .empty,
             .header_size = header_size,
         };
     }
@@ -338,7 +381,7 @@ pub const TensorList = struct {
             for (self.tensors_metadata.items) |*item| {
                 item.deinit();
             }
-            self.tensors_metadata.deinit();
+            self.tensors_metadata.deinit(self.allocator);
         }
     }
 
@@ -458,7 +501,7 @@ pub fn get_safetensors_content(allocator: std.mem.Allocator, file: *std.fs.File)
             offset_end,
         );
 
-        try tensors_list.tensors_metadata.append(cur_tensor);
+        try tensors_list.tensors_metadata.append(allocator, cur_tensor);
     }
 
     return tensors_list;
@@ -614,9 +657,9 @@ const QUANT_LAYER_KINDS = [_]LayerKind{
     .Mlp2WeightQuant,
 };
 
-fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
+fn demo(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
     const sample_len: usize = 16;
-    var sample = try allocator.alloc(f32, sample_len);
+    const sample = try allocator.alloc(f32, sample_len);
     defer allocator.free(sample);
 
     // iterate over blocks
@@ -632,15 +675,6 @@ fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
                 continue;
             };
             defer quantized_tensor.deinit();
-
-            var reader = TensorReader.init(&quantized_tensor);
-            defer reader.deinit();
-
-            const written = reader.read(sample);
-            std.debug.print("=== {s} ===\n", .{"block.22.mlp.mlp1_weight"});
-            for (sample[0..written], 0..) |v, i| {
-                std.debug.print("  [{d}] = {d}\n", .{ i, v });
-            }
         }
     }
 }
@@ -666,6 +700,35 @@ pub fn main() !void {
     var tensor_list = try get_safetensors_content(allocator, &file);
     defer tensor_list.deinit();
 
-    // MODEL DRIVER:
-    try model_driver(allocator, tensor_list);
+    const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+
+    var quantized_tensor = load_quantized_tensor(allocator, layer, tensor_list) catch |err| {
+        std.debug.print("  skipping (could not load): {any}\n", .{err});
+        return err;
+    };
+
+    // as per README:
+    var buf: [4096]u8 = undefined;
+    const buf_slice = buf[0..];
+
+    var tr = TensorReader.init(&quantized_tensor);
+
+    var legacy_reader = tr.reader();
+    // for v0.15
+    const adapter = legacy_reader.adaptToNewApi(buf_slice);
+    const raw_reader = std.io.readerFromStream(adapter.new_interface);
+
+    const reader = std.io.readerFromStream(raw_reader);
+
+    const n_read = try reader.readAll(buf_slice);
+    const float_size = @sizeOf(f32);
+    const n_floats = n_read / float_size;
+
+    // reinterpret bytes → f32 array
+    const float_bytes = buf_slice[0 .. n_floats * float_size];
+    const floats = @as([*]align(@alignOf(f32)) const f32, @ptrCast(float_bytes.ptr))[0 .. n_floats];
+
+    for (floats, 0..) |val, i| {
+        std.debug.print("val[{d}] = {d}\n", .{ i, val });
+    }
 }
