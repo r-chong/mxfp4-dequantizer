@@ -71,9 +71,6 @@ This process is accelerated using the Single Instruction, Multiple Data (SIMD) t
 
 This program outputs to a stream, the "decompressed" FP4 values in a higher precision form (haven't decided between F32 or BF16 yet).
 
-> “dequantization happens on the fly"
-We decode from top-down, keeping logical (global) index i and advance it. Indexing via logical index is NOT O(n) which was one of my initial confusions. We're using math to calculate our byte position and that's just adding up our variables.
-
 # References:
 - https://huggingface.co/docs/optimum/en/concept_guides/quantization
 - https://huggingface.co/docs/safetensors/v0.3.2/en/metadata_parsing

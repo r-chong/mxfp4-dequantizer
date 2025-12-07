@@ -11,13 +11,120 @@ const SAFETENSORS_PATH = "/Users/reese/code/cur_project/mxfp4-dequantizer/gpt-os
 // -----------------------------
 
 // layer member accesses
-const LAYER_I = "attn.qkv.weight";
-const LAYER_II = "attn.out.weight";
+// Extracted from GPT-OSS files: model.safetensors and dtypes.json
+const LayerKind = enum {
+    AttnNormScale,
+    AttnQkvWeight,
+    AttnQkvBias,
+    AttnOutWeight,
+    AttnOutBias,
+    AttnSinks,
+
+    MlpNormScale,
+    MlpGateWeight,
+    MlpGateBias,
+
+    Mlp1WeightQuant, // base name for .blocks/.scales
+    Mlp1Bias,
+    Mlp2WeightQuant, // base name for .blocks/.scales
+    Mlp2Bias,
+};
+
+const Layer = struct {
+    block_idx: usize,
+    kind: LayerKind,
+};
+
+fn kind_to_str(kind: LayerKind) []const u8 {
+    return switch (kind) {
+        .AttnNormScale => "attn.norm.scale",
+        .AttnQkvWeight => "attn.qkv.weight",
+        .AttnQkvBias => "attn.qkv.bias",
+        .AttnOutWeight => "attn.out.weight",
+        .AttnOutBias => "attn.out.bias",
+        .AttnSinks => "attn.sinks",
+
+        .MlpNormScale => "mlp.norm.scale",
+        .MlpGateWeight => "mlp.gate.weight",
+        .MlpGateBias => "mlp.gate.bias",
+
+        .Mlp1WeightQuant => "mlp.mlp1_weight",
+        .Mlp1Bias => "mlp.mlp1_bias",
+        .Mlp2WeightQuant => "mlp.mlp2_weight",
+        .Mlp2Bias => "mlp.mlp2_bias",
+    };
+}
+
+fn get_blocks_name_str(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}.blocks", .{base_name});
+}
+
+fn get_scales_name_str(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}.scales", .{base_name});
+}
+
+// base name is the JSON key
+fn make_base_name(allocator: std.mem.Allocator, layer: Layer) ![]const u8 {
+    return try std.fmt.allocPrint(allocator, "block.{d}.{s}", .{ layer.block_idx, kind_to_str(layer.kind) });
+}
+
 const TENSOR_PLACEHOLDER = "block.0.mlp.mlp1_weight";
+
+// -----------------------------
+// MXFP4 format
+// -----------------------------
 
 // GPT-OSS stores its scaling weights in separate tensors. if scaling values are stored WITH a block, then ensure this is kept in consideration.
 const MXFP4_BLOCK_SIZE: usize = 32;
 const MXFP4_VALUES_PER_BYTE: usize = 2;
+
+fn fp4_to_float(n: u4) f32 {
+    // first bit is sign, next two bits exponent, last bit mantissa
+    // bit layout: [s e e m]
+    const s: u1 = @intCast((n >> 3) & 0x1);
+    const e: u2 = @intCast((n >> 1) & 0x3);
+    const m: u1 = @intCast(n & 0x1);
+
+    const sign: f32 = if (s == 1) -1.0 else 1.0;
+
+    if (e == 0) {
+        // subnormal: exponent = -1, frac = 0.0 or 0.5
+        const frac: f32 = if (m == 0) 0.0 else 0.5;
+        const scale: f32 = 0.5; // 2^-1
+        return sign * frac * scale;
+    }
+
+    // normalized: exponent_i = e - 1 ∈ {0,1,2}
+    const frac: f32 = if (m == 0) 1.0 else 1.5;
+    const scale: f32 = switch (e) {
+        1 => 1.0, // 2^0
+        2 => 2.0, // 2^1
+        3 => 4.0, // 2^2
+        else => 1.0, // shouldn't happen
+    };
+
+    return sign * frac * scale;
+}
+
+// assemble a 16 bit integer from two 8-bit chunks (bytes) - 16-bit not to be confused with bf16
+// note: This does NOT mean "scale a byte to a float". It means: return the byte-format representation of our scale (i.e., the scale's bytes).
+fn scale_byte_to_float(ptr: []const u8, idx: usize) f32 {
+    const raw: u8 = ptr[idx];
+
+    // Build a float32 from E8M0 exponents
+    const bits: u32 = @as(u32, raw) << 23;
+    const scale: f32 = @bitCast(bits);
+
+    return scale;
+}
+
+// function tensor_split - turn tensor into individual blocks
+
+// function select tensor layer - how are we choosing the layer
+
+// -----------------------------
+// Safetensors
+// -----------------------------
 
 // Tensors in a Safetensors file have metadata like a JSON key (name), shape, dtype (for us MXFP4), byte position
 // We create instances of this struct to describe each respective tensor.
@@ -71,6 +178,7 @@ pub const TensorMetadata = struct {
 
 pub const QuantizedTensor = struct {
     // everything previously stored inside retrieve_quantized_values() is put into this struct
+    // note: we keep all counts we use as indices in comparisons, as usize
     allocator: std.mem.Allocator,
     shape: []u64,
     blocks_buf: []u8,
@@ -87,9 +195,9 @@ pub const QuantizedTensor = struct {
             .shape = try allocator.dupe(u64, shape),
             .blocks_buf = blocks_buf,
             .scales_buf = scales_buf,
-            .num_values = num_values,
-            .num_scales = num_scales,
-            .values_per_scale = values_per_scale,
+            .num_values = @intCast(num_values),
+            .num_scales = @intCast(num_scales),
+            .values_per_scale = @intCast(values_per_scale),
         };
     }
 
@@ -104,6 +212,7 @@ pub const QuantizedTensor = struct {
     pub fn decode_raw(self: *const Self, idx: usize) u4 {
         std.debug.assert(idx < self.num_values);
 
+        // integer division allows us to store a low nibble and high nibble per index
         const byte_idx = idx / 2;
         const byte = self.blocks_buf[byte_idx];
 
@@ -115,30 +224,58 @@ pub const QuantizedTensor = struct {
         return nibble;
     }
 
-    pub fn scale_for(self: *const Self, idx: usize) u8 {
+    // returns the scale index from the scale tensor
+    pub fn scale_idx_for(self: *const Self, idx: usize) usize {
         const scale_idx = idx / self.values_per_scale;
         std.debug.assert(scale_idx < self.num_scales);
-        return self.scales_buf[scale_idx];
+        return scale_idx;
     }
 
-    // // take nibble and turn FP4 ->
-    // pub fn decode(self: *const Self, idx: usize) f32 {
-    //     const nibble = self.decode_raw(idx);
-    //     // TODO: implement your MXFP4 → f32 mapping here
-    //     // e.g. sign/exponent/mantissa logic
-    //     return fp4ToFloat(nibble);
-    // }
+    // decode an individual nibble
+    pub fn decode(self: *const Self, idx: usize) f32 {
+        const nibble = self.decode_raw(idx);
+        return fp4_to_float(nibble);
+    }
 
-    // pub fn dequantize(self: *const Self, idx: usize) f32 {
-    //     const val = self.decode(idx);
-    //     const scale = self.scale_for(idx);
+    // take decoded nibble and scale, turn scale into f32, and multiply by value to get dequantized nibble
+    // TODO: replace with SIMD
+    pub fn dequantize_nibble(self: *const Self, nibble_idx: usize) f32 {
+        const val = self.decode(nibble_idx);
+        const scale_idx = self.scale_idx_for(nibble_idx);
 
-    //     const s = scaleByteToFloat(scale);
-    //     return val * s;
-    // }
+        const scale = scale_byte_to_float(self.scales_buf, scale_idx);
+        return val * scale;
+    }
 
-    // // Returns something that can stream dequantized values
-    // pub fn reader(self);
+    pub fn dequantize_block(self: *const Self, scale_idx: usize, out: []f32) usize {
+        std.debug.assert(out.len == self.values_per_scale);
+        const block_start = scale_idx * self.values_per_scale;
+
+        var i: usize = 0;
+        while (i < self.values_per_scale) : (i += 1) {
+            out[i] = self.dequantize_nibble(block_start + i);
+        }
+        return i;
+    }
+
+    pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []f32) usize {
+        if (start_idx >= self.num_values) return 0;
+
+        var idx: usize = start_idx;
+        var written: usize = 0;
+
+        const max_idx = self.num_values;
+        const cap = out.len;
+
+        while (idx < max_idx and written < cap) : (idx += 1) {
+            out[written] = self.dequantize_nibble(idx);
+            written += 1;
+        }
+
+        return written;
+    }
+    // stream dequantized values
+    // pub fn read(self);
 };
 
 // TensorLists are NOT layers. There is only ONE TensorList per file.
@@ -167,6 +304,39 @@ pub const TensorList = struct {
             self.tensors_metadata.deinit();
         }
     }
+
+    // traverse TensorList for name == target
+    fn get_tensor_by_name(self: *const Self, target: []const u8) ?*const TensorMetadata {
+        for (self.tensors_metadata.items) |*tensor_metadata| {
+            if (std.mem.eql(u8, tensor_metadata.name, target)) {
+                return tensor_metadata;
+            }
+        } else {
+            return null;
+        }
+    }
+
+    fn get_num_blocks(self: *const Self) usize {
+        var max_num_blocks: u64 = 0;
+        for (self.tensors_metadata.items) |tensor_metadata| {
+            const name = tensor_metadata.name;
+
+            if (!std.mem.startsWith(u8, name, "block.")) continue;
+
+            if (std.mem.indexOfScalarPos(u8, name, 6, '.')) |pos| {
+                const idx_slice = name[6..pos];
+
+                const block_idx = std.fmt.parseInt(usize, idx_slice, 10) catch continue;
+
+                // Track highest seen block index
+                if (block_idx + 1 > max_num_blocks) {
+                    max_num_blocks = block_idx + 1;
+                }
+            }
+        }
+
+        return max_num_blocks;
+    }
 };
 
 const UnifiedMetadata = struct {
@@ -188,10 +358,7 @@ const LoadedBuffers = struct {
 
 // parse JSON UTF-8 string, return tensors_list
 // TODO: turn this into a map. currently using a list approach as we're doing everything on the fly
-pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocator) !TensorList {
-    var file = try std.fs.openFileAbsolute(filepath, .{});
-    defer file.close();
-
+pub fn get_safetensors_content(allocator: std.mem.Allocator, file: *std.fs.File) !TensorList {
     // we create a buffer to read our JSON bytes into
     var header_size_buf: [HEADER_SIZE_BYTES]u8 = undefined;
 
@@ -265,18 +432,6 @@ pub fn get_safetensors_content(filepath: []const u8, allocator: std.mem.Allocato
     return tensors_list;
 }
 
-// TEMPORARY: traverse TensorList for name == target
-fn getTensorByName(tensor_list: TensorList, target: []const u8) ?*const TensorMetadata {
-    for (tensor_list.tensors_metadata.items) |*tensor_metadata| {
-        std.debug.print("name: {s}\n", .{tensor_metadata.name});
-        if (std.mem.eql(u8, tensor_metadata.name, target)) {
-            return tensor_metadata;
-        }
-    } else {
-        return null;
-    }
-}
-
 // walk fp4 values
 // one block per scale
 pub fn print_block(buffers: LoadedBuffers) void {
@@ -310,15 +465,18 @@ pub fn print_block(buffers: LoadedBuffers) void {
 }
 
 // given JSON key, gets metadata for both blocks tensor and scales tensor
-pub fn getBlockAndScaleMetadata(comptime base: []const u8, tensor_list: TensorList) !UnifiedMetadata {
-    const block_name = base ++ ".blocks";
-    const scale_name = base ++ ".scales";
+pub fn get_block_and_scale_metadata(allocator: std.mem.Allocator, base_name: []const u8, tensor_list: TensorList) !UnifiedMetadata {
+    const block_name = try get_blocks_name_str(allocator, base_name);
+    defer allocator.free(block_name);
+
+    const scale_name = try get_scales_name_str(allocator, base_name);
+    defer allocator.free(scale_name);
 
     // TEMPORARY: traverse TensorList for name == target
-    const block_tensor_meta = getTensorByName(tensor_list, block_name) orelse {
+    const block_tensor_meta = tensor_list.get_tensor_by_name(block_name) orelse {
         std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{block_name});
     };
-    const scale_tensor_meta = getTensorByName(tensor_list, scale_name) orelse {
+    const scale_tensor_meta = tensor_list.get_tensor_by_name(scale_name) orelse {
         std.debug.panic("Could not find tensor {s} in safetensors header.\n", .{scale_name});
     };
 
@@ -328,12 +486,13 @@ pub fn getBlockAndScaleMetadata(comptime base: []const u8, tensor_list: TensorLi
     };
 }
 
-fn loadBlocksAndScales(
+fn load_blocks_and_scales(
     metadata: UnifiedMetadata,
     header_size: u64,
     allocator: std.mem.Allocator,
 ) !LoadedBuffers {
-    // loadBlocksAndScales
+    // load_blocks_and_scales
+    // TODO: pass file pointer
     var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
     defer file.close();
 
@@ -345,7 +504,6 @@ fn loadBlocksAndScales(
     const block_tensor_size_u64 = metadata.block.offset_end - metadata.block.offset_start;
     const block_tensor_size: usize = @intCast(block_tensor_size_u64);
     const num_values = block_tensor_size * 2;
-    // const num_blocks = (num_values + MXFP4_BLOCK_SIZE - 1) / MXFP4_BLOCK_SIZE;
 
     // no defer (on success) as we pass to loaded_buffers
     try file.seekTo(metadata.block.offset_start + start_offset);
@@ -388,11 +546,9 @@ fn loadBlocksAndScales(
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
-pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allocator: std.mem.Allocator) !QuantizedTensor {
-    const base = "block.22.mlp.mlp1_weight";
-
-    const metadata = try getBlockAndScaleMetadata(base, tensor_list);
-    const loaded = try loadBlocksAndScales(metadata, header_size, allocator);
+pub fn retrieve_quantized_values_for_tensor(allocator: std.mem.Allocator, header_size: u64, tensor_list: TensorList, base_name: []const u8) !QuantizedTensor {
+    const metadata = try get_block_and_scale_metadata(allocator, base_name, tensor_list);
+    const loaded = try load_blocks_and_scales(metadata, header_size, allocator);
 
     const quantized_tensor = try QuantizedTensor.init(
         allocator,
@@ -407,17 +563,54 @@ pub fn retrieve_quantized_values(header_size: u64, tensor_list: TensorList, allo
     return quantized_tensor;
 }
 
-// function block_decoder - process individual block
+// master function - loads a QuantizedTensor object on which you can call .dequantize_ostream()
+pub fn load_quantized_tensor(allocator: std.mem.Allocator, layer: Layer, tensor_list: TensorList) !QuantizedTensor {
+    // build JSON key
+    const base_name = try make_base_name(allocator, layer);
+    defer allocator.free(base_name);
 
-// function tensor_split - turn tensor into individual blocks
+    // get QuantizedTensor
+    const quantized_tensor = try retrieve_quantized_values_for_tensor(allocator, tensor_list.header_size, tensor_list, base_name);
+    // do NOT deinit quantized_tensor - caller should free
 
-// function select tensor layer - how are we choosing the layer
+    return quantized_tensor;
+}
+
+// these are the only weights that are quantized
+const QUANT_LAYER_KINDS = [_]LayerKind{
+    .Mlp1WeightQuant,
+    .Mlp2WeightQuant,
+};
+
+fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
+    const sample_len: usize = 16;
+    var sample = try allocator.alloc(f32, sample_len);
+    defer allocator.free(sample);
+
+    // iterate over blocks
+    for (0..tensor_list.get_num_blocks()) |block_idx| {
+        for (QUANT_LAYER_KINDS) |kind| {
+            const layer: Layer = .{ .block_idx = block_idx, .kind = kind };
+
+            std.debug.print("=== block.{d}.{s} ===\n", .{ block_idx, kind_to_str(kind) });
+
+            var quantized_tensor = load_quantized_tensor(allocator, layer, tensor_list) catch |err| {
+                // If a particular layer/kind combo doesn't exist, just skip it.
+                std.debug.print("  skipping (could not load): {any}\n", .{err});
+                continue;
+            };
+            defer quantized_tensor.deinit();
+
+            const written = quantized_tensor.dequantize_ostream(0, sample);
+            for (sample[0..written], 0..) |v, i| {
+                std.debug.print("  [{d}] = {d}\n", .{ i, v });
+            }
+        }
+    }
+}
 
 // main
 pub fn main() !void {
-    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
-    defer file.close();
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer switch (gpa.deinit()) {
         .leak => std.debug.panic("Leaked", .{}),
@@ -426,17 +619,17 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // ok now we want to get the weights not just the header info. so need to use the offset to access
-    var tensor_list = try get_safetensors_content(SAFETENSORS_PATH, allocator);
+    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
+    defer file.close();
+
+    // DEMO ITEMS:
+    // choose layer via for loop
+    // const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+
+    // parse header
+    var tensor_list = try get_safetensors_content(allocator, &file);
     defer tensor_list.deinit();
 
-    // // print each TensorMetadata to ensure it works
-    for (tensor_list.tensors_metadata.items) |layer_spec| {
-        layer_spec.print();
-    }
-
-    var qt = try retrieve_quantized_values(tensor_list.header_size, tensor_list, allocator);
-    defer qt.deinit();
-    // ok now we want to access one specific tensor and get its fp4 values
-    // const retrieve_tensor_raw_bytes();
+    // MODEL DRIVER:
+    try model_driver(allocator, tensor_list);
 }
