@@ -5,7 +5,7 @@ const gpt_oss = @import("gpt_oss.zig");
 const quant = @import("quantized_tensor.zig");
 
 const SAFETENSORS_PATH =
-    "/Users/reese/code/cur_project/mxfp4-dequantizer/gpt-oss-20b/original/model.safetensors";
+    "";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

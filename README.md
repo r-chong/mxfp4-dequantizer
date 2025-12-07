@@ -12,14 +12,34 @@ const written = reader.read(std.mem.asBytes(&sample));
 ```
 
 # Steps to run:
-0. Create venv of choice
-1. Download gpt-oss for weights
+
+## 1. Download gpt-oss weights
+```bash
+hf download openai/gpt-oss-20b
 ```
-hf download openai/gpt-oss-20b --include "original/*" --local-dir gpt-oss-20b/
-pip install gpt-oss
-python -m gpt_oss.chat model/
+
+## 2. Update constants in `main.zig`
+You'll need to update these hardcoded values:
+
+Change to your absolute path where you downloaded the model
+```zig
+const SAFETENSORS_PATH =
+    "PLACEHOLDER";
 ```
-2. Interface the dequantizer (WIP)
+
+Chosen layer to inspect
+See `layer.zig` for available `LayerKind` options.
+```zig
+const lyr: layer.Layer = .{
+    .block_idx = 22,  // Which transformer block (0-based)
+    .kind = .Mlp1WeightQuant,  // Which tensor to load
+};
+
+```
+## 3. Compile and run
+```bash
+zig run main.zig
+```
 
 # Key Terminology
 
