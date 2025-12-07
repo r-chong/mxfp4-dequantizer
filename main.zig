@@ -176,6 +176,11 @@ pub const TensorMetadata = struct {
     }
 };
 
+const UnifiedMetadata = struct {
+    block: *const TensorMetadata,
+    scale: *const TensorMetadata,
+};
+
 pub const QuantizedTensor = struct {
     // everything previously stored inside retrieve_quantized_values() is put into this struct
     // note: we keep all counts we use as indices in comparisons, as usize
@@ -278,6 +283,38 @@ pub const QuantizedTensor = struct {
     // pub fn read(self);
 };
 
+const TensorReader = struct {
+    quantized_tensor: *QuantizedTensor,
+    cursor: usize,
+
+    const Self = @This();
+
+    pub fn init(quantized_tensor: *QuantizedTensor) Self {
+        return Self{
+            .quantized_tensor = quantized_tensor,
+            .cursor = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        // dont free the quantized tensor here!!!
+        self.* = undefined;
+    }
+
+    // read <=out.len values into out, returning # vals written'
+    pub fn read(self: *Self, out: []f32) usize {
+        if (out.len == 0) return 0;
+
+        const written = self.quantized_tensor.dequantize_ostream(self.cursor, out);
+        self.cursor += written;
+        return written;
+    }
+
+    pub fn reset(self: *Self) void {
+        self.cursor = 0;
+    }
+};
+
 // TensorLists are NOT layers. There is only ONE TensorList per file.
 pub const TensorList = struct {
     allocator: std.mem.Allocator,
@@ -337,11 +374,6 @@ pub const TensorList = struct {
 
         return max_num_blocks;
     }
-};
-
-const UnifiedMetadata = struct {
-    block: *const TensorMetadata,
-    scale: *const TensorMetadata,
 };
 
 const LoadedBuffers = struct {
@@ -601,7 +633,11 @@ fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
             };
             defer quantized_tensor.deinit();
 
-            const written = quantized_tensor.dequantize_ostream(0, sample);
+            var reader = TensorReader.init(&quantized_tensor);
+            defer reader.deinit();
+
+            const written = reader.read(sample);
+            std.debug.print("=== {s} ===\n", .{"block.22.mlp.mlp1_weight"});
             for (sample[0..written], 0..) |v, i| {
                 std.debug.print("  [{d}] = {d}\n", .{ i, v });
             }

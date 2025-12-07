@@ -77,6 +77,8 @@ This program outputs to a stream, the "decompressed" FP4 values in a higher prec
 - https://yobibyte.github.io/safetensors.html
 - https://huggingface.co/openai/gpt-oss-20b
 - https://huggingface.co/blog/RakshitAralimatti/learn-ai-with-me
+- https://ziglang.org/documentation/0.10.1/std/src/io/reader.zig.html
+- 
 
 The above (codebase included) was written without AI.
 
