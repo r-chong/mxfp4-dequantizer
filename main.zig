@@ -176,6 +176,11 @@ pub const TensorMetadata = struct {
     }
 };
 
+const UnifiedMetadata = struct {
+    block: *const TensorMetadata,
+    scale: *const TensorMetadata,
+};
+
 pub const QuantizedTensor = struct {
     // everything previously stored inside retrieve_quantized_values() is put into this struct
     // note: we keep all counts we use as indices in comparisons, as usize
@@ -278,6 +283,41 @@ pub const QuantizedTensor = struct {
     // pub fn read(self);
 };
 
+const TensorReader = struct {
+    quantized_tensor: *QuantizedTensor,
+    cursor: usize,
+
+    const Self = @This();
+
+    pub fn init(quantized_tensor: *QuantizedTensor) Self {
+        return Self{
+            .quantized_tensor = quantized_tensor,
+            .cursor = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        // dont free the quantized tensor here!!!
+        self.* = undefined;
+    }
+
+    // read <=out.len values into out, returning # vals written'
+    pub fn read(self: *Self, buf: []u8) usize {
+        if (buf.len == 0) return 0;
+
+        const aligned_buf: []align(@alignOf(f32)) u8 = @alignCast(buf);
+        const out = std.mem.bytesAsSlice(f32, aligned_buf);
+        const written = self.quantized_tensor.dequantize_ostream(self.cursor, out);
+        self.cursor += written;
+
+        return written * @sizeOf(f32);
+    }
+
+    pub fn reset(self: *Self) void {
+        self.cursor = 0;
+    }
+};
+
 // TensorLists are NOT layers. There is only ONE TensorList per file.
 pub const TensorList = struct {
     allocator: std.mem.Allocator,
@@ -337,11 +377,6 @@ pub const TensorList = struct {
 
         return max_num_blocks;
     }
-};
-
-const UnifiedMetadata = struct {
-    block: *const TensorMetadata,
-    scale: *const TensorMetadata,
 };
 
 const LoadedBuffers = struct {
@@ -582,33 +617,6 @@ const QUANT_LAYER_KINDS = [_]LayerKind{
     .Mlp2WeightQuant,
 };
 
-fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
-    const sample_len: usize = 16;
-    var sample = try allocator.alloc(f32, sample_len);
-    defer allocator.free(sample);
-
-    // iterate over blocks
-    for (0..tensor_list.get_num_blocks()) |block_idx| {
-        for (QUANT_LAYER_KINDS) |kind| {
-            const layer: Layer = .{ .block_idx = block_idx, .kind = kind };
-
-            std.debug.print("=== block.{d}.{s} ===\n", .{ block_idx, kind_to_str(kind) });
-
-            var quantized_tensor = load_quantized_tensor(allocator, layer, tensor_list) catch |err| {
-                // If a particular layer/kind combo doesn't exist, just skip it.
-                std.debug.print("  skipping (could not load): {any}\n", .{err});
-                continue;
-            };
-            defer quantized_tensor.deinit();
-
-            const written = quantized_tensor.dequantize_ostream(0, sample);
-            for (sample[0..written], 0..) |v, i| {
-                std.debug.print("  [{d}] = {d}\n", .{ i, v });
-            }
-        }
-    }
-}
-
 // main
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -630,6 +638,17 @@ pub fn main() !void {
     var tensor_list = try get_safetensors_content(allocator, &file);
     defer tensor_list.deinit();
 
-    // MODEL DRIVER:
-    try model_driver(allocator, tensor_list);
+    const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+    var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
+    defer quantized_tensor.deinit();
+
+    var reader = TensorReader.init(&quantized_tensor);
+    defer reader.deinit();
+
+    var sample: [16]f32 = undefined;
+    const written = reader.read(std.mem.asBytes(&sample));
+    std.debug.print("Written: {d}\n", .{written});
+    for (sample[0 .. written / @sizeOf(f32)], 0..) |v, i| {
+        std.debug.print("  [{d}] = {d}\n", .{ i, v });
+    }
 }

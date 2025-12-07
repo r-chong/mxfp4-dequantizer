@@ -4,8 +4,11 @@ A std.io.Reader that takes MXFP4 bytes from a safetensors file and outputs a str
 When I'm done it should interface like:
 
 ```zig
-var buf: [N]f32 = undefined;
-const n_read = try dequantizer.read(std.mem.asBytes(&buf));
+var reader = TensorReader.init(&quantized_tensor);
+defer reader.deinit();
+
+var sample: [16]f32 = undefined;
+const written = reader.read(std.mem.asBytes(&sample));
 ```
 
 # Steps to run:
@@ -77,6 +80,8 @@ This program outputs to a stream, the "decompressed" FP4 values in a higher prec
 - https://yobibyte.github.io/safetensors.html
 - https://huggingface.co/openai/gpt-oss-20b
 - https://huggingface.co/blog/RakshitAralimatti/learn-ai-with-me
+- https://ziglang.org/documentation/0.10.1/std/src/io/reader.zig.html
+- 
 
 The above (codebase included) was written without AI.
 
