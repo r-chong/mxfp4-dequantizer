@@ -1,6 +1,9 @@
 const std = @import("std");
 const mxfp4 = @import("mxfp4.zig");
 
+// SIMD
+const Vec4 = @Vector(4, f32);
+
 pub const QuantizedTensor = struct {
     // everything previously stored inside retrieve_quantized_values() is put into this struct
     // note: we keep all counts we use as indices in comparisons, as usize
@@ -63,24 +66,12 @@ pub const QuantizedTensor = struct {
     }
 
     // take decoded nibble and scale, turn scale into f32, and multiply by value to get dequantized nibble
-    // TODO: replace with SIMD
     pub fn dequantize_nibble(self: *const Self, nibble_idx: usize) f32 {
         const val = self.decode(nibble_idx);
         const scale_idx = self.scale_idx_for(nibble_idx);
 
         const scale = mxfp4.scale_byte_to_float(self.scales_buf, scale_idx);
         return val * scale;
-    }
-
-    pub fn dequantize_block(self: *const Self, scale_idx: usize, out: []f32) usize {
-        std.debug.assert(out.len == self.values_per_scale);
-        const block_start = scale_idx * self.values_per_scale;
-
-        var i: usize = 0;
-        while (i < self.values_per_scale) : (i += 1) {
-            out[i] = self.dequantize_nibble(block_start + i);
-        }
-        return i;
     }
 
     pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []f32) usize {
@@ -92,6 +83,36 @@ pub const QuantizedTensor = struct {
         const max_idx = self.num_values;
         const cap = out.len;
 
+        // add 4 to index as we traverse by Vec4
+        while (idx + 4 < max_idx and written + 4 < cap) : (idx += 1) {
+            const scale_idx0 = self.scale_idx_for(idx);
+            const scale0 = mxfp4.scale_byte_to_float(self.scales_buf, scale_idx0);
+            // apply scale (at scale)
+            const scale_vec: Vec4 = @splat(scale0);
+
+            // j is the index 0 1 2 3 of the 4 operations that have been parallelized by inline while
+            var vals: Vec4 = undefined;
+            var j: usize = 0;
+            while (j < 4) : (j += 1) {
+                vals[j] = self.decode(idx + j);
+            }
+
+            // vector mult!
+            const res: Vec4 = vals * scale_vec;
+
+            // write 4 results into out[written..written+4]
+            const buf_slice = out[written..][0..4];
+            const buf_bytes = std.mem.sliceAsBytes(buf_slice);
+            const res_bytes = std.mem.asBytes(&res);
+            // overwrite the dst slice from left to right
+            std.mem.copyForwards(u8, buf_bytes, res_bytes);
+
+            // traverse forward 4
+            idx += 4;
+            written += 4;
+        }
+
+        // fallback
         while (idx < max_idx and written < cap) : (idx += 1) {
             out[written] = self.dequantize_nibble(idx);
             written += 1;
