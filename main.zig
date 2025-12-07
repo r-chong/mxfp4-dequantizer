@@ -617,37 +617,6 @@ const QUANT_LAYER_KINDS = [_]LayerKind{
     .Mlp2WeightQuant,
 };
 
-fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
-    const sample_len: usize = 16;
-    var sample = try allocator.alloc(f32, sample_len);
-    defer allocator.free(sample);
-
-    // iterate over blocks
-    for (0..tensor_list.get_num_blocks()) |block_idx| {
-        for (QUANT_LAYER_KINDS) |kind| {
-            const layer: Layer = .{ .block_idx = block_idx, .kind = kind };
-
-            std.debug.print("=== block.{d}.{s} ===\n", .{ block_idx, kind_to_str(kind) });
-
-            var quantized_tensor = load_quantized_tensor(allocator, layer, tensor_list) catch |err| {
-                // If a particular layer/kind combo doesn't exist, just skip it.
-                std.debug.print("  skipping (could not load): {any}\n", .{err});
-                continue;
-            };
-            defer quantized_tensor.deinit();
-
-            var reader = TensorReader.init(&quantized_tensor);
-            defer reader.deinit();
-
-            const written = reader.read(std.mem.sliceAsBytes(sample));
-            std.debug.print("=== {s} ===\n", .{"block.22.mlp.mlp1_weight"});
-            for (sample[0 .. written / @sizeOf(f32)], 0..) |v, i| {
-                std.debug.print("  [{d}] = {d}\n", .{ i, v });
-            }
-        }
-    }
-}
-
 // main
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -669,6 +638,17 @@ pub fn main() !void {
     var tensor_list = try get_safetensors_content(allocator, &file);
     defer tensor_list.deinit();
 
-    // MODEL DRIVER:
-    try model_driver(allocator, tensor_list);
+    const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
+    var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
+    defer quantized_tensor.deinit();
+
+    var reader = TensorReader.init(&quantized_tensor);
+    defer reader.deinit();
+
+    var sample: [16]f32 = undefined;
+    const written = reader.read(std.mem.asBytes(&sample));
+    std.debug.print("Written: {d}\n", .{written});
+    for (sample[0 .. written / @sizeOf(f32)], 0..) |v, i| {
+        std.debug.print("  [{d}] = {d}\n", .{ i, v });
+    }
 }
