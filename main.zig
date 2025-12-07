@@ -4,8 +4,7 @@ const safetensors = @import("safetensors.zig");
 const gpt_oss = @import("gpt_oss.zig");
 const quant = @import("quantized_tensor.zig");
 
-const SAFETENSORS_PATH =
-    "";
+const SAFETENSORS_PATH ="";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -15,7 +14,13 @@ pub fn main() !void {
     };
     const allocator = gpa.allocator();
 
-    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
+    if (SAFETENSORS_PATH.len == 0 or !std.fs.path.isAbsolute(SAFETENSORS_PATH)) {
+        std.debug.panic("Please update SAFETENSORS_PATH in main.zig with the absolute path to your safetensors file.\n", .{});
+    }
+
+    var file = std.fs.openFileAbsolute(SAFETENSORS_PATH, .{}) catch {
+        std.debug.panic("Could not open file at path: {s}\nPlease verify the SAFETENSORS_PATH in main.zig is correct.\n", .{SAFETENSORS_PATH});
+    };
     defer file.close();
 
     var tensor_list = try safetensors.get_safetensors_content(allocator, &file);
