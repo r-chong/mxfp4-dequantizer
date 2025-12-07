@@ -66,7 +66,6 @@ pub const QuantizedTensor = struct {
     }
 
     // take decoded nibble and scale, turn scale into f32, and multiply by value to get dequantized nibble
-    // TODO: SIMD
     pub fn dequantize_nibble(self: *const Self, nibble_idx: usize) f32 {
         const val = self.decode(nibble_idx);
         const scale_idx = self.scale_idx_for(nibble_idx);
@@ -75,7 +74,6 @@ pub const QuantizedTensor = struct {
         return val * scale;
     }
 
-    // TODO: SIMD
     pub fn dequantize_ostream(self: *const Self, start_idx: usize, out: []f32) usize {
         if (start_idx >= self.num_values) return 0;
 
@@ -88,13 +86,9 @@ pub const QuantizedTensor = struct {
         // add 4 to index as we traverse by Vec4
         while (idx + 4 < max_idx and written + 4 < cap) : (idx += 1) {
             const scale_idx0 = self.scale_idx_for(idx);
-
-            out[written] = self.dequantize_nibble(idx);
-            written += 1;
-
-            const scale = mxfp4.scale_byte_to_float(self.scales_buf, scale_idx0);
+            const scale0 = mxfp4.scale_byte_to_float(self.scales_buf, scale_idx0);
             // apply scale (at scale)
-            const scale_vec: Vec4 = @splat(scale);
+            const scale_vec: Vec4 = @splat(scale0);
 
             // j is the index 0 1 2 3 of the 4 operations that have been parallelized by inline while
             var vals: Vec4 = undefined;
@@ -116,6 +110,12 @@ pub const QuantizedTensor = struct {
             // traverse forward 4
             idx += 4;
             written += 4;
+        }
+
+        // Scalar tail loop: handle remaining elements
+        while (idx < max_idx and written < cap) : (idx += 1) {
+            out[written] = self.dequantize_nibble(idx);
+            written += 1;
         }
 
         return written;
