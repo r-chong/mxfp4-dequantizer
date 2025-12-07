@@ -112,7 +112,7 @@ pub const QuantizedTensor = struct {
             written += 4;
         }
 
-        // Scalar tail loop: handle remaining elements
+        // fallback
         while (idx < max_idx and written < cap) : (idx += 1) {
             out[written] = self.dequantize_nibble(idx);
             written += 1;
