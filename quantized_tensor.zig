@@ -84,7 +84,7 @@ pub const QuantizedTensor = struct {
         const cap = out.len;
 
         // add 4 to index as we traverse by Vec4
-        while (idx + 4 < max_idx and written + 4 < cap) : (idx += 1) {
+        while (idx + 4 <= max_idx and written + 4 <= cap) : (idx += 1) {
             const scale_idx0 = self.scale_idx_for(idx);
             const scale0 = mxfp4.scale_byte_to_float(self.scales_buf, scale_idx0);
             // apply scale (at scale)
