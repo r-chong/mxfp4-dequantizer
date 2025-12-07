@@ -302,12 +302,15 @@ const TensorReader = struct {
     }
 
     // read <=out.len values into out, returning # vals written'
-    pub fn read(self: *Self, out: []f32) usize {
-        if (out.len == 0) return 0;
+    pub fn read(self: *Self, buf: []u8) usize {
+        if (buf.len == 0) return 0;
 
+        const aligned_buf: []align(@alignOf(f32)) u8 = @alignCast(buf);
+        const out = std.mem.bytesAsSlice(f32, aligned_buf);
         const written = self.quantized_tensor.dequantize_ostream(self.cursor, out);
         self.cursor += written;
-        return written;
+
+        return written * @sizeOf(f32);
     }
 
     pub fn reset(self: *Self) void {
@@ -636,9 +639,9 @@ fn model_driver(allocator: std.mem.Allocator, tensor_list: TensorList) !void {
             var reader = TensorReader.init(&quantized_tensor);
             defer reader.deinit();
 
-            const written = reader.read(sample);
+            const written = reader.read(std.mem.sliceAsBytes(sample));
             std.debug.print("=== {s} ===\n", .{"block.22.mlp.mlp1_weight"});
-            for (sample[0..written], 0..) |v, i| {
+            for (sample[0 .. written / @sizeOf(f32)], 0..) |v, i| {
                 std.debug.print("  [{d}] = {d}\n", .{ i, v });
             }
         }
