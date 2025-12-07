@@ -525,12 +525,9 @@ fn load_blocks_and_scales(
     metadata: UnifiedMetadata,
     header_size: u64,
     allocator: std.mem.Allocator,
+    file: *std.fs.File,
 ) !LoadedBuffers {
     // load_blocks_and_scales
-    // TODO: pass file pointer
-    var file = try std.fs.openFileAbsolute(SAFETENSORS_PATH, .{});
-    defer file.close();
-
     // our memory: | N | File Header | Tensor Data |
     // so our memory calculation becomes HEADER_SIZE_BYTES + header_size
     const start_offset = HEADER_SIZE_BYTES + header_size;
@@ -581,9 +578,9 @@ fn load_blocks_and_scales(
 // debug: check we can access bytes of an individual tensor
 // this will be repurposed to run for EVERY tensor
 // however I am hardcoding it for now, to run for one.
-pub fn retrieve_quantized_values_for_tensor(allocator: std.mem.Allocator, header_size: u64, tensor_list: TensorList, base_name: []const u8) !QuantizedTensor {
+pub fn retrieve_quantized_values_for_tensor(allocator: std.mem.Allocator, header_size: u64, tensor_list: TensorList, base_name: []const u8, file: *std.fs.File) !QuantizedTensor {
     const metadata = try get_block_and_scale_metadata(allocator, base_name, tensor_list);
-    const loaded = try load_blocks_and_scales(metadata, header_size, allocator);
+    const loaded = try load_blocks_and_scales(metadata, header_size, allocator, file);
 
     const quantized_tensor = try QuantizedTensor.init(
         allocator,
@@ -599,13 +596,13 @@ pub fn retrieve_quantized_values_for_tensor(allocator: std.mem.Allocator, header
 }
 
 // master function - loads a QuantizedTensor object on which you can call .dequantize_ostream()
-pub fn load_quantized_tensor(allocator: std.mem.Allocator, layer: Layer, tensor_list: TensorList) !QuantizedTensor {
+pub fn load_quantized_tensor(allocator: std.mem.Allocator, layer: Layer, tensor_list: TensorList, file: *std.fs.File) !QuantizedTensor {
     // build JSON key
     const base_name = try make_base_name(allocator, layer);
     defer allocator.free(base_name);
 
     // get QuantizedTensor
-    const quantized_tensor = try retrieve_quantized_values_for_tensor(allocator, tensor_list.header_size, tensor_list, base_name);
+    const quantized_tensor = try retrieve_quantized_values_for_tensor(allocator, tensor_list.header_size, tensor_list, base_name, file);
     // do NOT deinit quantized_tensor - caller should free
 
     return quantized_tensor;
@@ -639,7 +636,7 @@ pub fn main() !void {
     defer tensor_list.deinit();
 
     const layer: Layer = .{ .block_idx = 22, .kind = LayerKind.Mlp1WeightQuant };
-    var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list);
+    var quantized_tensor = try load_quantized_tensor(allocator, layer, tensor_list, &file);
     defer quantized_tensor.deinit();
 
     var reader = TensorReader.init(&quantized_tensor);
