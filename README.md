@@ -27,6 +27,8 @@ A **tensor** is an array. Ours contain model weights in FP4 format.
 
 A **layer** is a semantic grouping of tensors. It comes from neural network layers.
 
+**Splatting** is applying a scale to a block of values
+
 **Microscaling FP4** (abbrev. MXFP4) is a custom 4-bit quantization format where every TWO FP4 values are packed into one byte, and the number of values depends entirely on the tensor’s shape. This is the quantization format assumed in this program.
 
 **Dequantization** is the reverse of quantization, where we go from low precision -> high precision.
@@ -72,6 +74,11 @@ We repeat this process for all tensors.
 
 This process is accelerated using the Single Instruction, Multiple Data (SIMD) technique - which is basically using vectors to do operations at once instead of in sequences.
 
+- Instead of decoding a single nibble, we unpack **8 or 16 FP4 values** from a few bytes.
+- We convert those nibbles into floats
+- We broadcast the scale for that block into a SIMD vector.
+- We do a vector multiply to dequantize a whole block in one go, and then write the results back to memory.
+
 This program outputs to a stream, the "decompressed" FP4 values in a higher precision form (haven't decided between F32 or BF16 yet).
 
 # References:
@@ -81,11 +88,12 @@ This program outputs to a stream, the "decompressed" FP4 values in a higher prec
 - https://huggingface.co/openai/gpt-oss-20b
 - https://huggingface.co/blog/RakshitAralimatti/learn-ai-with-me
 - https://ziglang.org/documentation/0.10.1/std/src/io/reader.zig.html
-- 
+- https://ricefields.me/2024/06/09/vector-primitives.html
 
 The above (codebase included) was written without AI.
 
 # TODO:
+- fp4 lookup table
 - get_safetensors_content without an allocator
 - use a fixed-capacity representation for shapes
 - make LayerMetadata not depend on heap-allocated []u64 shapes (use fixed [MAX_DIMS]u64 + rank).
